@@ -71,13 +71,7 @@ async function main() {
     healthMonitor = new NotificationHealthMonitor(null, getWorkerManager(), {
       repository,
       getLastSuccessfulPoll: () => subscriber?.getLastSuccessfulPoll() ?? null,
-    });
-
       getUptimeMs: () => Date.now() - PROCESS_START_TIME,
-    });
-
-    healthMonitor = new NotificationHealthMonitor(null, getWorkerManager(), {
-      repository,
     });
 
     // Rebuild registry with configured event TTL
