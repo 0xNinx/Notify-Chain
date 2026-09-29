@@ -31,6 +31,7 @@ import { SecretValidationError } from './config/validate-secrets';
 import { NotificationHealthMonitor } from './services/notification-health-monitor';
 import { getWorkerManager } from './services/worker-manager';
 import { EventDeduplicationService } from './services/event-deduplication-service';
+import { DeliveryReceiptRepository } from './services/delivery-receipt-repository';
 
 dotenv.config();
 
@@ -57,6 +58,7 @@ async function main() {
   let metricsRunner: NotificationMetricsRunner | null = null;
   let metricsStore: NotificationMetricsStore | null = null;
   let deduplicationService: EventDeduplicationService | null = null;
+  let deliveryReceiptRepository: DeliveryReceiptRepository | null = null;
 
   if (config.analytics?.enabled) {
     initNotificationAnalyticsAggregator(config.analytics);
@@ -67,6 +69,7 @@ async function main() {
     const db = await initializeDatabase(config.databasePath);
 
     repository = new ScheduledNotificationRepository(db);
+    deliveryReceiptRepository = new DeliveryReceiptRepository(db);
     
     healthMonitor = new NotificationHealthMonitor(null, getWorkerManager(), {
       repository,
@@ -132,13 +135,26 @@ async function main() {
         discordService = new DiscordNotificationService(config.discord);
       }
 
-      scheduler = new NotificationScheduler(repository, config.scheduler, discordService);
+      scheduler = new NotificationScheduler(
+        repository,
+        config.scheduler,
+        discordService,
+        undefined,
+        undefined,
+        deliveryReceiptRepository,
+      );
       await scheduler.start();
 
       logger.info('Notification scheduler started successfully');
 
       if (config.retryScheduler?.enabled) {
-        retryScheduler = new RetryScheduler(repository, config.retryScheduler, discordService);
+        retryScheduler = new RetryScheduler(
+          repository,
+          config.retryScheduler,
+          discordService,
+          undefined,
+          deliveryReceiptRepository,
+        );
         await retryScheduler.start();
         logger.info('Retry scheduler started successfully');
       }
@@ -165,6 +181,7 @@ async function main() {
     archiveService,
     metricsStore,
     healthMonitor,
+    deliveryReceiptRepository,
   });
 
   if (healthMonitor) {
