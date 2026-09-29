@@ -16,6 +16,7 @@ import { EventDeduplicationService } from './event-deduplication-service';
 import { EventProcessingQueue } from './event-processing-queue';
 import { NotificationExpirationService } from './notification-expiration';
 import { pollingMetrics } from './polling-metrics';
+import { RpcRateLimiter } from './rpc-rate-limiter';
 
 export class EventSubscriber {
   private config: Config;
@@ -29,17 +30,24 @@ export class EventSubscriber {
   private eventQueue: EventProcessingQueue | null = null;
   private expirationService: NotificationExpirationService | null = null;
   private lastSuccessfulPollAt: number | null = null;
+  private rpcRateLimiter: RpcRateLimiter | null = null;
+  private backfillStartLedger: number | null = null;
 
   constructor(config: Config, deduplicationService?: EventDeduplicationService) {
     this.config = config;
     this.server = new StellarSDK.rpc.Server(config.stellarRpcUrl);
     this.deduplicationService = deduplicationService ?? null;
-    
+
+    // Initialize RPC rate limiter if configured
+    if (config.rpcRateLimit) {
+      this.rpcRateLimiter = new RpcRateLimiter(config.rpcRateLimit);
+    }
+
     // Initialize expiration service if configured
     if (config.expiration) {
       this.expirationService = new NotificationExpirationService(config.expiration);
     }
-    
+
     if (config.discord) {
       this.discordService = new DiscordNotificationService(config.discord);
       this.retryQueue = new NotificationRetryQueue(
@@ -170,9 +178,6 @@ export class EventSubscriber {
             });
           }
         }
-        const processableEvents = events.filter((event: StellarSDK.rpc.Api.EventResponse) =>
-          this.shouldProcessEvent(event, contractConfig, requestId)
-        );
 
         if (events.length > 0) {
           logger.info('Received events', {
@@ -338,28 +343,12 @@ export class EventSubscriber {
   private async getContractEvents(
     contractConfig: ContractConfig
   ): Promise<StellarSDK.rpc.Api.GetEventsResponse> {
+    // Apply rate limiting before making RPC request
+    if (this.rpcRateLimiter) {
+      await this.rpcRateLimiter.acquire();
+    }
+
     const lastCursor = this.lastCursors.get(contractConfig.address);
-    const request: StellarSDK.rpc.Api.GetEventsRequest = lastCursor
-      ? {
-          filters: [
-            {
-              contractIds: [contractConfig.address],
-              type: 'contract',
-            },
-          ],
-          cursor: lastCursor,
-          limit: this.config.eventBatchSize,
-        }
-      : {
-          filters: [
-            {
-              contractIds: [contractConfig.address],
-              type: 'contract',
-            },
-          ],
-          startLedger: 1,
-          limit: this.config.eventBatchSize,
-        };
 
     let request: StellarSDK.rpc.Api.GetEventsRequest;
 

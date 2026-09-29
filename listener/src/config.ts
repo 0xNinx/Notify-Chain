@@ -1,7 +1,6 @@
-import { Config, ContractConfig, DiscordConfig, WebhookSecret, AppCleanupConfig, EventQueueConfig, RetrySchedulerOptions, AnalyticsConfig, ExpirationConfig, ApiKey } from './types';
+import { Config, ContractConfig, DiscordConfig, WebhookSecret, AppCleanupConfig, EventQueueConfig, RetrySchedulerOptions, AnalyticsConfig, ExpirationConfig, ApiKey, BackfillConfig, LoggingConfig, ApiConfig, RpcRateLimitConfig } from './types';
 import { validateCorsOrigin, CorsValidationError } from './utils/cors-validator';
 import { ConfigurationSchemaValidator, APP_CONFIG_SCHEMA } from './config-schema';
-import { Config, ContractConfig, DiscordConfig, WebhookSecret, AppCleanupConfig, EventQueueConfig, RetrySchedulerOptions, AnalyticsConfig, ExpirationConfig, ApiKey, BackfillConfig, LoggingConfig, ApiConfig } from './types';
 import {
   SUPPORTED_LOG_FORMATS,
   SUPPORTED_LOG_LEVELS,
@@ -244,6 +243,24 @@ function loadBackfillConfig(): BackfillConfig {
   };
 }
 
+/**
+ * Load RPC rate limiting configuration for event ingestion.
+ *
+ * RPC_RATE_LIMIT_ENABLED controls whether rate limiting is applied to RPC
+ * requests during event ingestion. This prevents excessive RPC requests and
+ * resource consumption.
+ *
+ * Default: enabled, 10 requests per second, burst of 20, 1s throttle delay.
+ */
+function loadRpcRateLimitConfig(): RpcRateLimitConfig {
+  return {
+    enabled: trimEnv('RPC_RATE_LIMIT_ENABLED') !== 'false',
+    maxRequestsPerSecond: parseIntegerEnv('RPC_RATE_LIMIT_MAX_REQUESTS_PER_SECOND', '10'),
+    burstSize: parseIntegerEnv('RPC_RATE_LIMIT_BURST_SIZE', '20'),
+    throttleDelayMs: parseIntegerEnv('RPC_RATE_LIMIT_THROTTLE_DELAY_MS', '1000'),
+  };
+}
+
 export function loadConfig(): Config {
   validateRequiredEnvVars();
 
@@ -304,6 +321,7 @@ export function loadConfig(): Config {
     analytics: loadAnalyticsConfig(),
     expiration: loadExpirationConfig(),
     backfill: loadBackfillConfig(),
+    rpcRateLimit: loadRpcRateLimitConfig(),
     logging: loadLoggingConfig(),
     api: loadApiConfig(),
   };
@@ -623,6 +641,28 @@ export function validateConfig(config: Config): void {
       errors.push(
         `BACKFILL_MAX_LEDGERS must be >= 0 (0 = unlimited). ` +
           `(received: ${config.backfill.maxLedgers}).`,
+      );
+    }
+  }
+
+  // ── RPC Rate Limiting ───────────────────────────────────────────────────────
+  if (config.rpcRateLimit) {
+    if (config.rpcRateLimit.maxRequestsPerSecond < 1) {
+      errors.push(
+        `RPC_RATE_LIMIT_MAX_REQUESTS_PER_SECOND must be >= 1 ` +
+          `(received: ${config.rpcRateLimit.maxRequestsPerSecond}).`,
+      );
+    }
+    if (config.rpcRateLimit.burstSize < 1) {
+      errors.push(
+        `RPC_RATE_LIMIT_BURST_SIZE must be >= 1 ` +
+          `(received: ${config.rpcRateLimit.burstSize}).`,
+      );
+    }
+    if (config.rpcRateLimit.throttleDelayMs < 0) {
+      errors.push(
+        `RPC_RATE_LIMIT_THROTTLE_DELAY_MS must be >= 0 ` +
+          `(received: ${config.rpcRateLimit.throttleDelayMs}).`,
       );
     }
   }
