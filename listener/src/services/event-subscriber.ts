@@ -29,6 +29,8 @@ export class EventSubscriber {
   private eventQueue: EventProcessingQueue | null = null;
   private expirationService: NotificationExpirationService | null = null;
   private lastSuccessfulPollAt: number | null = null;
+  /** Cold-start ledger resolved once per session by resolveBackfillStartLedger(). */
+  private backfillStartLedger: number | null = null;
 
   constructor(config: Config, deduplicationService?: EventDeduplicationService) {
     this.config = config;
@@ -170,9 +172,6 @@ export class EventSubscriber {
             });
           }
         }
-        const processableEvents = events.filter((event: StellarSDK.rpc.Api.EventResponse) =>
-          this.shouldProcessEvent(event, contractConfig, requestId)
-        );
 
         if (events.length > 0) {
           logger.info('Received events', {
@@ -339,27 +338,7 @@ export class EventSubscriber {
     contractConfig: ContractConfig
   ): Promise<StellarSDK.rpc.Api.GetEventsResponse> {
     const lastCursor = this.lastCursors.get(contractConfig.address);
-    const request: StellarSDK.rpc.Api.GetEventsRequest = lastCursor
-      ? {
-          filters: [
-            {
-              contractIds: [contractConfig.address],
-              type: 'contract',
-            },
-          ],
-          cursor: lastCursor,
-          limit: this.config.eventBatchSize,
-        }
-      : {
-          filters: [
-            {
-              contractIds: [contractConfig.address],
-              type: 'contract',
-            },
-          ],
-          startLedger: 1,
-          limit: this.config.eventBatchSize,
-        };
+    const limit = this.config.eventBatchSize ?? 100;
 
     let request: StellarSDK.rpc.Api.GetEventsRequest;
 
@@ -368,7 +347,7 @@ export class EventSubscriber {
       request = {
         filters: [{ contractIds: [contractConfig.address], type: 'contract' }],
         cursor: lastCursor,
-        limit: 100,
+        limit,
       };
     } else {
       // Cold start: apply the backfill safety limit.
@@ -376,7 +355,7 @@ export class EventSubscriber {
       request = {
         filters: [{ contractIds: [contractConfig.address], type: 'contract' }],
         startLedger,
-        limit: 100,
+        limit,
       };
     }
 
@@ -392,29 +371,34 @@ export class EventSubscriber {
     const eventStart = Date.now();
     const eventName = getEventName(event.topic);
 
-    // Check persistent deduplication first (to catch reorg duplicates)
+    // Atomically claim the event before doing any work. Only one concurrent
+    // processor (poll cycle, backfill, queue worker or another listener
+    // instance sharing the database) wins the claim; everyone else skips.
+    // A separate isDuplicate() check followed by a later write would leave a
+    // window in which two processors both send the notification.
     if (this.deduplicationService) {
-      const duplicate = await this.deduplicationService.isDuplicate(event.id, contractConfig.address);
-      if (duplicate.isDuplicate) {
-        logger.warn('Skipping event: already processed (persistent deduplication)', {
+      const claim = await this.deduplicationService.claimEvent(
+        event.id,
+        contractConfig.address,
+        event.ledger,
+        event.txHash,
+        event.type,
+      );
+      if (!claim.claimed) {
+        logger.warn('Skipping event: already processed or in progress (persistent deduplication)', {
           requestId: correlationId,
           correlationId,
           eventId: event.id,
           contractAddress: contractConfig.address,
-          isReorgDuplicate: duplicate.isReorgDuplicate,
         });
-        
-        // Record that we detected this duplicate
-        await this.deduplicationService.recordProcessedEvent(
+
+        // Count the redetection without overwriting the original outcome.
+        await this.deduplicationService.recordRedetection(
           event.id,
           contractConfig.address,
           event.ledger,
-          event.txHash,
-          event.type,
-          false, // No notification sent
-          'SKIPPED'
         );
-        
+
         return true;
       }
     }
@@ -483,9 +467,9 @@ export class EventSubscriber {
       }
     }
 
-    // Record the processed event for persistent deduplication
+    // Finalise the claim with the processing outcome.
     if (this.deduplicationService) {
-      await this.deduplicationService.recordProcessedEvent(
+      await this.deduplicationService.completeEvent(
         event.id,
         contractConfig.address,
         event.ledger,
