@@ -111,8 +111,18 @@ export interface EventQueueConfig {
 }
 
 export interface AppCleanupConfig {
+  /** Whether scheduled database cleanup is enabled. */
+  enabled: boolean;
   /** How often to run cleanup jobs (ms). */
   intervalMs: number;
+  /** Global retention period for database cleanup (days). */
+  retentionDays: number;
+  /** Explicit legacy per-table overrides, when supplied. */
+  retentionOverridesMs?: {
+    processedEvents?: number;
+    executionLogs?: number;
+    rateLimitEvents?: number;
+  };
   /** Retain completed/failed/cancelled notifications for this long (ms). */
   notificationRetentionMs: number;
   /** Retain rate-limit audit rows for this long (ms). */
