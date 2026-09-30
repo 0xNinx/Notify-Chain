@@ -489,22 +489,26 @@ export class ScheduledNotificationRepository {
   /**
    * Cancel a scheduled notification
    */
-  async cancel(id: number): Promise<boolean> {
+  async cancel(id: number, reason?: string): Promise<boolean> {
+    // Store cancellation reason inside error_details as JSON.
+    const errorDetails = reason ? JSON.stringify({ cancellationReason: reason }) : null;
+
     const sql = `
       UPDATE scheduled_notifications
-      SET status = ?, updated_at = ?
+      SET status = ?, updated_at = ?, error_details = ?
       WHERE id = ? AND status = ?
     `;
 
     const result = await this.db.run(sql, [
       NotificationStatus.CANCELLED,
       new Date().toISOString(),
+      errorDetails,
       id,
       NotificationStatus.PENDING,
     ]);
 
     if (result.changes > 0) {
-      logger.info('Notification cancelled', { id });
+      logger.info('Notification cancelled', { id, reason });
       return true;
     }
 
@@ -827,6 +831,18 @@ export class ScheduledNotificationRepository {
       lockExpiresAt: parseUtc(row.lock_expires_at) ?? null,
       lastError: row.last_error,
       errorDetails: row.error_details,
+      // Parse cancellation reason from stored JSON, if present.
+      cancellationReason: (() => {
+        if (!row.error_details) return null;
+        try {
+          const parsed = JSON.parse(row.error_details);
+          return typeof parsed.cancellationReason === 'string'
+            ? parsed.cancellationReason
+            : null;
+        } catch {
+          return null;
+        }
+      })(),
       eventId: row.event_id,
       contractAddress: row.contract_address,
       priority: row.priority,

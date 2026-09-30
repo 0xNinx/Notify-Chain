@@ -204,10 +204,13 @@ export class NotificationAPI {
 
   /**
    * Cancel a scheduled notification.
+   * @param id - The ID of the notification
+   * @param reason - An optional reason for cancellation
+   * @param requestId - Optional request ID for logging
    */
-  async cancelNotification(id: number, requestId?: string): Promise<boolean> {
-    logger.info('Cancelling scheduled notification', { requestId, id });
-    return await this.repository.cancel(id);
+  async cancelNotification(id: number, reason?: string, requestId?: string): Promise<boolean> {
+    logger.info('Cancelling scheduled notification', { requestId, id, reason });
+    return await this.repository.cancel(id, reason);
   }
 
   /**
