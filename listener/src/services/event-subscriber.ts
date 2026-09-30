@@ -16,7 +16,7 @@ import { EventDeduplicationService } from './event-deduplication-service';
 import { EventProcessingQueue } from './event-processing-queue';
 import { NotificationExpirationService } from './notification-expiration';
 import { pollingMetrics } from './polling-metrics';
-import { CircuitBreaker } from './circuit-breaker';
+import { CircuitBreaker } from '../utils/circuit-breaker';
 
 export class EventSubscriber {
   private config: Config;
@@ -30,19 +30,24 @@ export class EventSubscriber {
   private eventQueue: EventProcessingQueue | null = null;
   private expirationService: NotificationExpirationService | null = null;
   private lastSuccessfulPollAt: number | null = null;
-  private backfillStartLedger: number | null = null;
   private circuitBreaker: CircuitBreaker | null = null;
+  private backfillStartLedger: number | null = null;
 
   constructor(config: Config, deduplicationService?: EventDeduplicationService) {
     this.config = config;
     this.server = new StellarSDK.rpc.Server(config.stellarRpcUrl);
     this.deduplicationService = deduplicationService ?? null;
-    
+
+    // Initialize circuit breaker if configured
+    if (config.circuitBreaker) {
+      this.circuitBreaker = new CircuitBreaker(config.circuitBreaker);
+    }
+
     // Initialize expiration service if configured
     if (config.expiration) {
       this.expirationService = new NotificationExpirationService(config.expiration);
     }
-    
+
     if (config.discord) {
       this.discordService = new DiscordNotificationService(config.discord);
       this.retryQueue = new NotificationRetryQueue(
@@ -57,16 +62,6 @@ export class EventSubscriber {
           this.processEvent(event, contractConfig, requestId),
         config.eventQueue
       );
-    }
-
-    // Initialize circuit breaker if configured
-    if (config.circuitBreaker) {
-      this.circuitBreaker = new CircuitBreaker(config.circuitBreaker);
-      logger.info('Circuit breaker initialized', {
-        failureThreshold: config.circuitBreaker.failureThreshold,
-        recoveryTimeoutMs: config.circuitBreaker.recoveryTimeoutMs,
-        successThreshold: config.circuitBreaker.successThreshold,
-      });
     }
   }
 
@@ -183,9 +178,6 @@ export class EventSubscriber {
             });
           }
         }
-        const processableEvents = events.filter((event: StellarSDK.rpc.Api.EventResponse) =>
-          this.shouldProcessEvent(event, contractConfig, requestId)
-        );
 
         if (events.length > 0) {
           logger.info('Received events', {
@@ -352,33 +344,42 @@ export class EventSubscriber {
     contractConfig: ContractConfig
   ): Promise<StellarSDK.rpc.Api.GetEventsResponse> {
     const lastCursor = this.lastCursors.get(contractConfig.address);
-    let eventRequest: StellarSDK.rpc.Api.GetEventsRequest;
+    let request: StellarSDK.rpc.Api.GetEventsRequest;
 
     if (lastCursor) {
       // Normal real-time polling: continue from the last known cursor.
-      eventRequest = {
-        filters: [{ contractIds: [contractConfig.address], type: 'contract' }],
+      request = {
+        filters: [
+          {
+            contractIds: [contractConfig.address],
+            type: 'contract',
+          },
+        ],
         cursor: lastCursor,
-        limit: 100,
+        limit: this.config.eventBatchSize,
       };
     } else {
       // Cold start: apply the backfill safety limit.
       const startLedger = await this.resolveBackfillStartLedger();
-      eventRequest = {
-        filters: [{ contractIds: [contractConfig.address], type: 'contract' }],
+      request = {
+        filters: [
+          {
+            contractIds: [contractConfig.address],
+            type: 'contract',
+          },
+        ],
         startLedger,
-        limit: 100,
+        limit: this.config.eventBatchSize,
       };
     }
 
-    // Wrap RPC call with circuit breaker if configured
+    const rpcCall = async () => this.server.getEvents(request);
+
     if (this.circuitBreaker) {
-      return await this.circuitBreaker.execute(async () => {
-        return await this.server.getEvents(eventRequest);
-      });
+      return await this.circuitBreaker.execute(rpcCall);
     }
 
-    return await this.server.getEvents(eventRequest);
+    return await rpcCall();
   }
 
   private async processEvent(
@@ -540,5 +541,9 @@ export class EventSubscriber {
 
   getLastSuccessfulPoll(): number | null {
     return this.lastSuccessfulPollAt;
+  }
+
+  getCircuitBreakerMetrics() {
+    return this.circuitBreaker?.getMetrics() || null;
   }
 }

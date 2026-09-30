@@ -67,9 +67,6 @@ export interface Config {
   backfill?: BackfillConfig;
   logging?: LoggingConfig;
   api?: ApiConfig;
-  /** Dry-run mode: parse and validate events without persisting or delivering notifications. */
-  dryRun?: boolean;
-  /** Circuit breaker configuration for RPC failure handling. */
   circuitBreaker?: CircuitBreakerConfig;
 }
 
@@ -92,15 +89,6 @@ export interface ApiConfig {
    * with 413 and their payload is never parsed.
    */
   maxBodyBytes: number;
-}
-
-export interface CircuitBreakerConfig {
-  /** Number of consecutive failures required to open the circuit (default: 5). */
-  failureThreshold?: number;
-  /** Time in milliseconds to wait before attempting recovery (default: 60000). */
-  recoveryTimeoutMs?: number;
-  /** Number of successful calls required to close the circuit from half-open state (default: 2). */
-  successThreshold?: number;
 }
 
 export interface SchedulerConfig {
@@ -187,5 +175,18 @@ export interface BackfillConfig {
    * (the previous default behaviour).  Default: 10 000.
    */
   maxLedgers: number;
+}
+
+/**
+ * Circuit breaker configuration for RPC calls to prevent continuous requests
+ * to an unavailable endpoint.
+ */
+export interface CircuitBreakerConfig {
+  /** Number of consecutive failures required to open the circuit (default: 5) */
+  failureThreshold?: number;
+  /** Time in milliseconds to wait before attempting recovery (default: 60000) */
+  recoveryTimeoutMs?: number;
+  /** Time in milliseconds to consider a request as timed out (default: 30000) */
+  requestTimeoutMs?: number;
 }
 
