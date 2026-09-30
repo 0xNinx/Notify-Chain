@@ -1,13 +1,26 @@
 import crypto from 'crypto';
 import { WebhookSecret } from '../types';
 import logger from '../utils/logger';
+import { WebhookReplayCache, buildReplayCacheKey } from './webhook-replay-cache';
 
 const SIGNATURE_PREFIX = 'sha256=';
 const SIGNING_SEPARATOR = '.';
 
+/** A timestamp header must be a bare integer number of seconds since the epoch. */
+const TIMESTAMP_PATTERN = /^\d{1,15}$/;
+
 export interface SignatureVerificationOptions {
   /** Maximum age of the request in seconds (default: 300 = 5 minutes) */
   maxAgeSeconds?: number;
+  /**
+   * Reject requests that carry no `X-Webhook-Timestamp`.
+   *
+   * When false (the default, preserving legacy behaviour) a request without a
+   * timestamp is signed over the bare body and is therefore valid forever.
+   * Webhook ingress should set this to true so replay is bounded by
+   * `maxAgeSeconds` instead of being unbounded.
+   */
+  requireTimestamp?: boolean;
 }
 
 export interface SignatureVerificationResult {
@@ -76,7 +89,9 @@ export function verifySignature(
     return { valid: false, reason: 'missing_signature_header' };
   }
 
-  if (!signatureHeader.startsWith(SIGNATURE_PREFIX)) {
+  // The prefix is compared case-insensitively: hex digests are case-insensitive
+  // by definition, and several senders emit `SHA256=`.
+  if (signatureHeader.slice(0, SIGNATURE_PREFIX.length).toLowerCase() !== SIGNATURE_PREFIX) {
     logger.warn('Webhook signature verification failed: invalid prefix', {
       ...auditContext,
       receivedPrefix: signatureHeader.slice(0, Math.min(signatureHeader.length, 10)),
@@ -84,9 +99,18 @@ export function verifySignature(
     return { valid: false, reason: 'invalid_signature_prefix' };
   }
 
+  const hasTimestamp = timestampHeader !== undefined && timestampHeader !== null && timestampHeader !== '';
+
+  if (!hasTimestamp && options?.requireTimestamp) {
+    logger.warn('Webhook signature verification failed: timestamp required but absent', {
+      ...auditContext,
+    });
+    return { valid: false, reason: 'missing_timestamp' };
+  }
+
   // Validate timestamp expiration if provided
-  if (timestampHeader && options?.maxAgeSeconds !== undefined) {
-    if (!isTimestampValid(timestampHeader, options.maxAgeSeconds)) {
+  if (hasTimestamp && options?.maxAgeSeconds !== undefined) {
+    if (!isTimestampValid(timestampHeader as string, options.maxAgeSeconds)) {
       logger.warn('Webhook signature verification failed: timestamp expired or invalid', {
         ...auditContext,
         timestampHeader,
@@ -102,7 +126,7 @@ export function verifySignature(
     .update(signingInput, 'utf8')
     .digest('hex');
 
-  const providedSig = signatureHeader.slice(SIGNATURE_PREFIX.length);
+  const providedSig = signatureHeader.slice(SIGNATURE_PREFIX.length).toLowerCase();
 
   if (expectedSig.length !== providedSig.length) {
     logger.warn('Webhook signature verification failed: signature length mismatch', {
@@ -129,12 +153,21 @@ export function verifySignature(
 /**
  * Validates that a timestamp header is within the acceptable age window.
  * Prevents replay attacks by rejecting requests with stale timestamps.
+ *
+ * The header must be a bare integer. `parseInt` alone would accept values such
+ * as `"1700000000abc"` or `"1700000000.9"`, which would let a sender smuggle
+ * arbitrary bytes past validation while still signing a value the verifier
+ * silently truncates.
  */
 export function isTimestampValid(timestampHeader: string, maxAgeSeconds: number): boolean {
   try {
-    const requestTimestamp = parseInt(timestampHeader, 10);
+    if (typeof timestampHeader !== 'string' || !TIMESTAMP_PATTERN.test(timestampHeader)) {
+      return false;
+    }
 
-    if (isNaN(requestTimestamp)) {
+    const requestTimestamp = Number(timestampHeader);
+
+    if (!Number.isSafeInteger(requestTimestamp)) {
       return false;
     }
 
@@ -191,6 +224,17 @@ export interface WebhookVerificationContext {
   requestId?: string;
   correlationId?: string;
   maxAgeSeconds?: number;
+  /**
+   * Reject requests that carry no `X-Webhook-Timestamp`. Defaults to true:
+   * without a bound timestamp a captured request stays valid indefinitely.
+   */
+  requireTimestamp?: boolean;
+  /**
+   * Server-side replay cache. When supplied, a request whose signature has
+   * already been accepted inside the freshness window is rejected, which closes
+   * the hole left by the optional client-supplied `Idempotency-Key`.
+   */
+  replayCache?: WebhookReplayCache;
 }
 
 export interface WebhookVerificationOutcome {
@@ -223,6 +267,16 @@ const AUTH_ERRORS: Record<string, { message: string; code: string; status: numbe
     code: 'AUTH_INVALID_SIGNATURE_FORMAT',
     status: 401,
   },
+  missing_timestamp: {
+    message: 'Missing timestamp header',
+    code: 'AUTH_MISSING_TIMESTAMP',
+    status: 401,
+  },
+  replay_detected: {
+    message: 'Request already processed',
+    code: 'AUTH_REPLAY_DETECTED',
+    status: 409,
+  },
   timestamp_expired: {
     message: 'Request timestamp expired or invalid',
     code: 'AUTH_TIMESTAMP_EXPIRED',
@@ -241,7 +295,17 @@ const AUTH_ERRORS: Record<string, { message: string; code: string; status: numbe
 };
 
 export function verifyWebhookRequest(ctx: WebhookVerificationContext): WebhookVerificationOutcome {
-  const { headers, rawBody, secrets, sourceIp, requestId, correlationId, maxAgeSeconds } = ctx;
+  const {
+    headers,
+    rawBody,
+    secrets,
+    sourceIp,
+    requestId,
+    correlationId,
+    maxAgeSeconds,
+    requireTimestamp = true,
+    replayCache,
+  } = ctx;
 
   const signatureHeader = extractSignature(headers);
   const keyId = extractKeyId(headers);
@@ -293,12 +357,14 @@ export function verifyWebhookRequest(ctx: WebhookVerificationContext): WebhookVe
     };
   }
 
+  const effectiveMaxAgeSeconds = maxAgeSeconds ?? 300;
+
   const verification = verifySignature(
     rawBody,
     signatureHeader,
     secret,
     timestampHeader ?? undefined,
-    { maxAgeSeconds: maxAgeSeconds ?? 300 },
+    { maxAgeSeconds: effectiveMaxAgeSeconds, requireTimestamp },
     auditContext
   );
 
@@ -312,6 +378,30 @@ export function verifyWebhookRequest(ctx: WebhookVerificationContext): WebhookVe
       keyId,
       timestampVerified: false,
     };
+  }
+
+  // The request is authentic at this point. Claim it in the replay cache so a
+  // captured request cannot be resubmitted inside the freshness window.
+  if (replayCache) {
+    const cacheKey = buildReplayCacheKey(keyId, signatureHeader);
+    const firstSighting = replayCache.claim(cacheKey, effectiveMaxAgeSeconds * 1000);
+
+    if (!firstSighting) {
+      logger.warn('Webhook authentication rejected: replayed request', {
+        ...auditContext,
+        keyId,
+        maxAgeSeconds: effectiveMaxAgeSeconds,
+      });
+      const e = AUTH_ERRORS.replay_detected;
+      return {
+        authenticated: false,
+        statusCode: e.status,
+        errorCode: e.code,
+        message: e.message,
+        keyId,
+        timestampVerified: true,
+      };
+    }
   }
 
   logger.info('Webhook authentication succeeded', {
