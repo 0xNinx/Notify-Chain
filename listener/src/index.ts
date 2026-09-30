@@ -67,17 +67,11 @@ async function main() {
     const db = await initializeDatabase(config.databasePath);
 
     repository = new ScheduledNotificationRepository(db);
-    
+
     healthMonitor = new NotificationHealthMonitor(null, getWorkerManager(), {
       repository,
       getLastSuccessfulPoll: () => subscriber?.getLastSuccessfulPoll() ?? null,
-    });
-
       getUptimeMs: () => Date.now() - PROCESS_START_TIME,
-    });
-
-    healthMonitor = new NotificationHealthMonitor(null, getWorkerManager(), {
-      repository,
     });
 
     // Rebuild registry with configured event TTL
@@ -216,11 +210,11 @@ async function main() {
         await retryScheduler.stop();
       }
 
-    if (subscriber) {
-      await subscriber.stop();
-    }
+      if (subscriber) {
+        await subscriber.stop();
+      }
 
-    eventsServer.close();
+      eventsServer.close();
 
       logger.info('Graceful shutdown completed successfully', { signal });
       process.exit(0);
