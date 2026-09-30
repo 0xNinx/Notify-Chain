@@ -7,6 +7,8 @@ import { getNotificationAnalyticsAggregator, NotificationAnalyticsAggregator } f
 import { sendWebhook } from './webhook-sender';
 import { NotificationType } from '../types/scheduled-notification';
 import { generateCorrelationId } from '../utils/request-id';
+import { getDatabase } from '../database/database';
+import { SecurityAuditService } from './security-audit';
 
 export const MAX_DISCORD_EMBED_LENGTH = 6000;
 export const MAX_DISCORD_FIELD_VALUE_LENGTH = 1024;
@@ -186,6 +188,19 @@ export class DiscordNotificationService implements NotificationProvider {
           durationMs,
           attempt,
         });
+
+        if (responseCategory === 'auth_error') {
+          const auditService = new SecurityAuditService(getDatabase());
+          await auditService.record({
+            action: 'auth_failure',
+            actor: correlationId,
+            sourceIp: undefined,
+            requestId: correlationId,
+            correlationId,
+            outcome: 'http_' + response.status,
+            details: { url: this.config.webhookUrl },
+          });
+        }
       } catch (error) {
         const durationMs = Date.now() - attemptStart;
         logger.error('Discord webhook request error', {

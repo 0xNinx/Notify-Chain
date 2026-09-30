@@ -362,13 +362,13 @@ describe('verifyWebhookRequest — end-to-end request authentication', () => {
     { id: 'key-beta', secret: 'whsec_beta_def456' },
   ];
 
-  it('AUTHENTICATES a valid timestamp-bound request and logs success', () => {
+  it('AUTHENTICATES a valid timestamp-bound request and logs success', async () => {
     const payload = '{"event":"delivery","id":"evt-1"}';
     const key = SECRETS[0];
     const ts = Math.floor(Date.now() / 1000).toString();
     const sig = computeWebhookSignature(payload, key.secret, ts);
 
-    const outcome = verifyWebhookRequest({
+    const outcome = await verifyWebhookRequest({
       headers: {
         'x-webhook-signature': sig,
         'x-webhook-key-id': key.id,
@@ -389,8 +389,8 @@ describe('verifyWebhookRequest — end-to-end request authentication', () => {
     );
   });
 
-  it('REJECTS with 401 when signature header is entirely missing', () => {
-    const outcome = verifyWebhookRequest({
+  it('REJECTS with 401 when signature header is entirely missing', async () => {
+    const outcome = await verifyWebhookRequest({
       headers: { 'x-webhook-key-id': 'key-alpha' },
       rawBody: '{}',
       secrets: SECRETS,
@@ -402,10 +402,10 @@ describe('verifyWebhookRequest — end-to-end request authentication', () => {
     expect(mockLogger.warn).toHaveBeenCalled();
   });
 
-  it('REJECTS with 401 when key-id header is missing', () => {
+  it('REJECTS with 401 when key-id header is missing', async () => {
     const payload = '{}';
     const sig = computeWebhookSignature(payload, SECRETS[0].secret);
-    const outcome = verifyWebhookRequest({
+    const outcome = await verifyWebhookRequest({
       headers: { 'x-webhook-signature': sig },
       rawBody: payload,
       secrets: SECRETS,
@@ -417,10 +417,10 @@ describe('verifyWebhookRequest — end-to-end request authentication', () => {
     expect(mockLogger.warn).toHaveBeenCalled();
   });
 
-  it('REJECTS with 401 AUTH_UNKNOWN_KEY_ID for a key-id not in the secrets array', () => {
+  it('REJECTS with 401 AUTH_UNKNOWN_KEY_ID for a key-id not in the secrets array', async () => {
     const payload = '{}';
     const sig = computeWebhookSignature(payload, 'rogue-secret');
-    const outcome = verifyWebhookRequest({
+    const outcome = await verifyWebhookRequest({
       headers: {
         'x-webhook-signature': sig,
         'x-webhook-key-id': 'key-does-not-exist',
@@ -434,11 +434,11 @@ describe('verifyWebhookRequest — end-to-end request authentication', () => {
     expect(outcome.errorCode).toBe('AUTH_UNKNOWN_KEY_ID');
   });
 
-  it('REJECTS with 401 AUTH_INVALID_SIGNATURE when HMAC does not match (wrong secret)', () => {
+  it('REJECTS with 401 AUTH_INVALID_SIGNATURE when HMAC does not match (wrong secret)', async () => {
     const payload = '{"malicious":true}';
     const forgedSig = computeWebhookSignature(payload, 'wrong-secret');
     const ts = Math.floor(Date.now() / 1000).toString();
-    const outcome = verifyWebhookRequest({
+    const outcome = await verifyWebhookRequest({
       headers: {
         'x-webhook-signature': forgedSig,
         'x-webhook-key-id': SECRETS[0].id,
@@ -453,11 +453,11 @@ describe('verifyWebhookRequest — end-to-end request authentication', () => {
     expect(outcome.errorCode).toBe('AUTH_INVALID_SIGNATURE');
   });
 
-  it('REJECTS with 401 AUTH_TIMESTAMP_EXPIRED for a stale timestamp bound to a valid HMAC', () => {
+  it('REJECTS with 401 AUTH_TIMESTAMP_EXPIRED for a stale timestamp bound to a valid HMAC', async () => {
     const payload = '{"event":"old"}';
     const oldTs = (Math.floor(Date.now() / 1000) - 1000).toString();
     const sig = computeWebhookSignature(payload, SECRETS[1].secret, oldTs);
-    const outcome = verifyWebhookRequest({
+    const outcome = await verifyWebhookRequest({
       headers: {
         'x-webhook-signature': sig,
         'x-webhook-key-id': SECRETS[1].id,
@@ -473,8 +473,8 @@ describe('verifyWebhookRequest — end-to-end request authentication', () => {
     expect(outcome.errorCode).toBe('AUTH_TIMESTAMP_EXPIRED');
   });
 
-  it('REJECTS with 401 AUTH_INVALID_SIGNATURE_FORMAT when prefix is wrong', () => {
-    const outcome = verifyWebhookRequest({
+  it('REJECTS with 401 AUTH_INVALID_SIGNATURE_FORMAT when prefix is wrong', async () => {
+    const outcome = await verifyWebhookRequest({
       headers: {
         'x-webhook-signature': 'md5=deadbeef',
         'x-webhook-key-id': SECRETS[0].id,
@@ -488,8 +488,8 @@ describe('verifyWebhookRequest — end-to-end request authentication', () => {
     expect(outcome.errorCode).toBe('AUTH_INVALID_SIGNATURE_FORMAT');
   });
 
-  it('logs source IP and correlation ID on auth failure for audit trail', () => {
-    verifyWebhookRequest({
+  it('logs source IP and correlation ID on auth failure for audit trail', async () => {
+    await verifyWebhookRequest({
       headers: { 'x-webhook-key-id': SECRETS[0].id },
       rawBody: '{}',
       secrets: SECRETS,
@@ -507,12 +507,12 @@ describe('verifyWebhookRequest — end-to-end request authentication', () => {
     );
   });
 
-  it('REJECTS payload tampering — attacker modifies body after valid signature computed', () => {
+  it('REJECTS payload tampering — attacker modifies body after valid signature computed', async () => {
     const originalBody = '{"action":"transfer","amount":10}';
     const tamperedBody = '{"action":"transfer","amount":1000000}';
     const ts = Math.floor(Date.now() / 1000).toString();
     const sig = computeWebhookSignature(originalBody, SECRETS[0].secret, ts);
-    const outcome = verifyWebhookRequest({
+    const outcome = await verifyWebhookRequest({
       headers: {
         'x-webhook-signature': sig,
         'x-webhook-key-id': SECRETS[0].id,
@@ -526,11 +526,11 @@ describe('verifyWebhookRequest — end-to-end request authentication', () => {
     expect(outcome.errorCode).toBe('AUTH_INVALID_SIGNATURE');
   });
 
-  it('REJECTS signature forged for a different key-id (even if HMAC is valid for another secret)', () => {
+  it('REJECTS signature forged for a different key-id (even if HMAC is valid for another secret)', async () => {
     const payload = '{}';
     // Signed with key-beta's secret but presented as key-alpha
     const sig = computeWebhookSignature(payload, SECRETS[1].secret);
-    const outcome = verifyWebhookRequest({
+    const outcome = await verifyWebhookRequest({
       headers: {
         'x-webhook-signature': sig,
         'x-webhook-key-id': SECRETS[0].id,
@@ -543,8 +543,8 @@ describe('verifyWebhookRequest — end-to-end request authentication', () => {
     expect(outcome.errorCode).toBe('AUTH_INVALID_SIGNATURE');
   });
 
-  it('rejects empty-string signature with missing_signature_header flow', () => {
-    const outcome = verifyWebhookRequest({
+  it('rejects empty-string signature with missing_signature_header flow', async () => {
+    const outcome = await verifyWebhookRequest({
       headers: {
         'x-webhook-signature': '',
         'x-webhook-key-id': SECRETS[0].id,
@@ -557,11 +557,11 @@ describe('verifyWebhookRequest — end-to-end request authentication', () => {
     expect(outcome.statusCode).toBe(401);
   });
 
-  it('uses default maxAgeSeconds=300 when not explicitly provided', () => {
+  it('uses default maxAgeSeconds=300 when not explicitly provided', async () => {
     const payload = '{}';
     const ts = Math.floor(Date.now() / 1000).toString();
     const sig = computeWebhookSignature(payload, SECRETS[0].secret, ts);
-    const outcome = verifyWebhookRequest({
+    const outcome = await verifyWebhookRequest({
       headers: {
         'x-webhook-signature': sig,
         'x-webhook-key-id': SECRETS[0].id,
