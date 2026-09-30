@@ -27,7 +27,9 @@ export class ScheduledNotificationRepository {
   }
 
   /**
-   * Create a new scheduled notification
+   * Create a new scheduled notification.
+   * If a deduplicationKey is provided and a notification with that key already
+   * exists, the existing notification's id is returned without creating a duplicate.
    */
   async create(input: CreateScheduledNotificationInput, requestId?: string): Promise<number> {
     const payloadJson = JSON.stringify(input.payload);
@@ -37,8 +39,8 @@ export class ScheduledNotificationRepository {
     const sql = `
       INSERT INTO scheduled_notifications (
         payload, payload_hash, notification_type, target_recipient, execute_at,
-        max_retries, event_id, contract_address, priority, metadata
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        max_retries, event_id, contract_address, priority, metadata, deduplication_key
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `;
 
     const serializedPayload = compressPayload(input.payload);
@@ -54,21 +56,44 @@ export class ScheduledNotificationRepository {
       input.contractAddress ?? null,
       input.priority ?? 5,
       input.metadata ? JSON.stringify(input.metadata) : null,
+      input.deduplicationKey ?? null,
     ];
 
-    const result = await this.db.run(sql, params);
-    
-    // Invalidate stats cache after creation
-    this.statsCache.invalidate();
-    
-    logger.info('Scheduled notification created', {
-      requestId,
-      id: result.lastID,
-      executeAt: input.executeAt,
-      type: input.notificationType,
-    });
+    try {
+      const result = await this.db.run(sql, params);
 
-    return result.lastID;
+      this.statsCache.invalidate();
+
+      logger.info('Scheduled notification created', {
+        requestId,
+        id: result.lastID,
+        executeAt: input.executeAt,
+        type: input.notificationType,
+      });
+
+      return result.lastID;
+    } catch (err) {
+      if (
+        input.deduplicationKey &&
+        (err as any)?.message?.includes('UNIQUE constraint failed')
+      ) {
+        const existing = await this.db.get<{ id: number }>(
+          'SELECT id FROM scheduled_notifications WHERE deduplication_key = ?',
+          [input.deduplicationKey],
+        );
+
+        if (existing) {
+          logger.info('Duplicate notification skipped — deduplication key already exists', {
+            requestId,
+            deduplicationKey: input.deduplicationKey,
+            existingId: existing.id,
+          });
+          return existing.id;
+        }
+      }
+
+      throw err;
+    }
   }
 
   /**
@@ -832,6 +857,7 @@ export class ScheduledNotificationRepository {
       priority: row.priority,
       metadata: row.metadata,
       nextRetryAt: row.next_retry_at ? new Date(row.next_retry_at) : null,
+      deduplicationKey: row.deduplication_key ?? null,
     };
   }
 }

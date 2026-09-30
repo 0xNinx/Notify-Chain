@@ -379,7 +379,7 @@ export class DiscordNotificationService {
     if (title.length > MAX_DISCORD_EMBED_TITLE_LENGTH) {
       title = title.slice(0, MAX_DISCORD_EMBED_TITLE_LENGTH - 3) + '...';
       logger.warn('Discord embed title truncated', {
-        originalLength: embed.title.length,
+        originalLength: title.length + 3,
         maxLength: MAX_DISCORD_EMBED_TITLE_LENGTH,
       });
     }
@@ -399,9 +399,10 @@ export class DiscordNotificationService {
 
     let footer = embed.footer;
     if (footer?.text && footer.text.length > MAX_DISCORD_FOOTER_TEXT_LENGTH) {
+      const originalLength = footer.text.length;
       footer = { text: footer.text.slice(0, MAX_DISCORD_FOOTER_TEXT_LENGTH - 3) + '...' };
       logger.warn('Discord footer text truncated', {
-        originalLength: embed.footer.text.length,
+        originalLength,
         maxLength: MAX_DISCORD_FOOTER_TEXT_LENGTH,
       });
     }
