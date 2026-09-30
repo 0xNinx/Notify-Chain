@@ -1,7 +1,7 @@
-import { Config, ContractConfig, DiscordConfig, WebhookSecret, AppCleanupConfig, EventQueueConfig, RetrySchedulerOptions, AnalyticsConfig, ExpirationConfig, ApiKey } from './types';
+import { Config, ContractConfig, DiscordConfig, WebhookSecret, AppCleanupConfig, EventQueueConfig, RetrySchedulerOptions, AnalyticsConfig, ExpirationConfig, ApiKey, BackfillConfig, LoggingConfig, ApiConfig } from './types';
 import { validateCorsOrigin, CorsValidationError } from './utils/cors-validator';
 import { ConfigurationSchemaValidator, APP_CONFIG_SCHEMA } from './config-schema';
-import { Config, ContractConfig, DiscordConfig, WebhookSecret, AppCleanupConfig, EventQueueConfig, RetrySchedulerOptions, AnalyticsConfig, ExpirationConfig, ApiKey, BackfillConfig, LoggingConfig, ApiConfig } from './types';
+import { validateSecrets } from './config/validate-secrets';
 import {
   SUPPORTED_LOG_FORMATS,
   SUPPORTED_LOG_LEVELS,
@@ -192,6 +192,7 @@ function loadAnalyticsConfig(): AnalyticsConfig {
 function loadRetrySchedulerConfig(): RetrySchedulerOptions {
   return {
     enabled: trimEnv('RETRY_SCHEDULER_ENABLED') !== 'false',
+    webhookTimeoutMs: parseIntegerEnv('WEBHOOK_DELIVERY_TIMEOUT_MS', '10000'),
     pollIntervalMs: parseIntegerEnv('RETRY_SCHEDULER_POLL_INTERVAL_MS', '15000'),
     lockTimeoutMs: parseIntegerEnv('RETRY_SCHEDULER_LOCK_TIMEOUT_MS', '60000'),
     processorId: trimEnv('RETRY_SCHEDULER_PROCESSOR_ID'),
