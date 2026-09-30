@@ -331,10 +331,41 @@ describe('Config validation', () => {
       expect(() => validateConfig(config)).not.toThrow();
     });
 
-    it('detects empty CONTRACT_ADDRESSES array', () => {
+    it('accepts multiple contract addresses in configuration', () => {
+      process.env.CONTRACT_ADDRESSES = JSON.stringify([
+        { address: 'CXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX', events: ['TaskCreated'] },
+        { address: 'CXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX', events: ['TaskCompleted', 'TaskFailed'] },
+        { address: 'CXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX', events: ['*'] }
+      ]);
+      process.env.STELLAR_RPC_URL = 'https://soroban-testnet.stellar.org:443';
+      process.env.STELLAR_NETWORK_PASSPHRASE = 'Test SDF Network ; September 2015';
+      process.env.POLL_INTERVAL_MS = '30000';
+      process.env.EVENTS_API_PORT = '8787';
+      process.env.DATABASE_PATH = './data/notifications.db';
+
+      const config = loadConfig();
+      expect(config.contractAddresses).toHaveLength(3);
+      expect(() => validateConfig(config)).not.toThrow();
+    });
+
+    it('detects empty CONTRACT_ADDRESSES array during loadConfig', () => {
       process.env.CONTRACT_ADDRESSES = '[]';
+
+      expect(() => loadConfig()).toThrow(ConfigError);
+      expect(() => loadConfig()).toThrow(
+        'CONTRACT_ADDRESSES is empty. The listener requires at least one contract to monitor'
+      );
+    });
+
+    it('detects empty CONTRACT_ADDRESSES array during validateConfig', () => {
+      process.env.CONTRACT_ADDRESSES = JSON.stringify([
+        { address: 'CXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX', events: ['TaskCreated'] }
+      ]);
       
       const config = loadConfig();
+      // Manually set to empty to test validateConfig path
+      config.contractAddresses = [];
+      
       expect(() => validateConfig(config)).toThrow(ConfigError);
       expect(() => validateConfig(config)).toThrow(
         'CONTRACT_ADDRESSES is empty. The listener requires at least one contract to monitor'
@@ -448,25 +479,26 @@ describe('Config validation', () => {
     });
 
     it('reports multiple configuration errors together', () => {
-      process.env.CONTRACT_ADDRESSES = '[]';
+      process.env.CONTRACT_ADDRESSES = JSON.stringify([
+        { address: 'CXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX', events: ['TaskCreated'] }
+      ]);
       process.env.STELLAR_RPC_URL = 'not-a-url';
       process.env.POLL_INTERVAL_MS = '500';
       process.env.EVENTS_API_PORT = '70000';
-      
+
       const config = loadConfig();
-      
+
       expect(() => validateConfig(config)).toThrow(ConfigError);
-      
+
       try {
         validateConfig(config);
       } catch (error) {
         if (error instanceof ConfigError) {
-          // Verify all 4 errors are reported
-          expect(error.message).toContain('Configuration validation failed with 4 error(s)');
+          // Verify all 3 errors are reported (CONTRACT_ADDRESSES is now valid)
+          expect(error.message).toContain('Configuration validation failed with 3 error(s)');
           expect(error.message).toContain('STELLAR_RPC_URL is not a valid URL');
           expect(error.message).toContain('POLL_INTERVAL_MS must be at least 1000 ms');
           expect(error.message).toContain('EVENTS_API_PORT must be between 1 and 65535');
-          expect(error.message).toContain('CONTRACT_ADDRESSES is empty');
         } else {
           throw error;
         }
