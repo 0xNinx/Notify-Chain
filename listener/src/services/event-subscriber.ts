@@ -16,6 +16,7 @@ import { EventDeduplicationService } from './event-deduplication-service';
 import { EventProcessingQueue } from './event-processing-queue';
 import { NotificationExpirationService } from './notification-expiration';
 import { pollingMetrics } from './polling-metrics';
+import { CircuitBreaker } from './circuit-breaker';
 
 export class EventSubscriber {
   private config: Config;
@@ -29,6 +30,8 @@ export class EventSubscriber {
   private eventQueue: EventProcessingQueue | null = null;
   private expirationService: NotificationExpirationService | null = null;
   private lastSuccessfulPollAt: number | null = null;
+  private backfillStartLedger: number | null = null;
+  private circuitBreaker: CircuitBreaker | null = null;
 
   constructor(config: Config, deduplicationService?: EventDeduplicationService) {
     this.config = config;
@@ -54,6 +57,16 @@ export class EventSubscriber {
           this.processEvent(event, contractConfig, requestId),
         config.eventQueue
       );
+    }
+
+    // Initialize circuit breaker if configured
+    if (config.circuitBreaker) {
+      this.circuitBreaker = new CircuitBreaker(config.circuitBreaker);
+      logger.info('Circuit breaker initialized', {
+        failureThreshold: config.circuitBreaker.failureThreshold,
+        recoveryTimeoutMs: config.circuitBreaker.recoveryTimeoutMs,
+        successThreshold: config.circuitBreaker.successThreshold,
+      });
     }
   }
 
@@ -339,33 +352,11 @@ export class EventSubscriber {
     contractConfig: ContractConfig
   ): Promise<StellarSDK.rpc.Api.GetEventsResponse> {
     const lastCursor = this.lastCursors.get(contractConfig.address);
-    const request: StellarSDK.rpc.Api.GetEventsRequest = lastCursor
-      ? {
-          filters: [
-            {
-              contractIds: [contractConfig.address],
-              type: 'contract',
-            },
-          ],
-          cursor: lastCursor,
-          limit: this.config.eventBatchSize,
-        }
-      : {
-          filters: [
-            {
-              contractIds: [contractConfig.address],
-              type: 'contract',
-            },
-          ],
-          startLedger: 1,
-          limit: this.config.eventBatchSize,
-        };
-
-    let request: StellarSDK.rpc.Api.GetEventsRequest;
+    let eventRequest: StellarSDK.rpc.Api.GetEventsRequest;
 
     if (lastCursor) {
       // Normal real-time polling: continue from the last known cursor.
-      request = {
+      eventRequest = {
         filters: [{ contractIds: [contractConfig.address], type: 'contract' }],
         cursor: lastCursor,
         limit: 100,
@@ -373,14 +364,21 @@ export class EventSubscriber {
     } else {
       // Cold start: apply the backfill safety limit.
       const startLedger = await this.resolveBackfillStartLedger();
-      request = {
+      eventRequest = {
         filters: [{ contractIds: [contractConfig.address], type: 'contract' }],
         startLedger,
         limit: 100,
       };
     }
 
-    return await this.server.getEvents(request);
+    // Wrap RPC call with circuit breaker if configured
+    if (this.circuitBreaker) {
+      return await this.circuitBreaker.execute(async () => {
+        return await this.server.getEvents(eventRequest);
+      });
+    }
+
+    return await this.server.getEvents(eventRequest);
   }
 
   private async processEvent(

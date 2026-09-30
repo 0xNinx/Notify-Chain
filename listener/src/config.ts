@@ -1,7 +1,6 @@
-import { Config, ContractConfig, DiscordConfig, WebhookSecret, AppCleanupConfig, EventQueueConfig, RetrySchedulerOptions, AnalyticsConfig, ExpirationConfig, ApiKey } from './types';
+import { Config, ContractConfig, DiscordConfig, WebhookSecret, AppCleanupConfig, EventQueueConfig, RetrySchedulerOptions, AnalyticsConfig, ExpirationConfig, ApiKey, BackfillConfig, LoggingConfig, ApiConfig, CircuitBreakerConfig } from './types';
 import { validateCorsOrigin, CorsValidationError } from './utils/cors-validator';
 import { ConfigurationSchemaValidator, APP_CONFIG_SCHEMA } from './config-schema';
-import { Config, ContractConfig, DiscordConfig, WebhookSecret, AppCleanupConfig, EventQueueConfig, RetrySchedulerOptions, AnalyticsConfig, ExpirationConfig, ApiKey, BackfillConfig, LoggingConfig, ApiConfig } from './types';
 import {
   SUPPORTED_LOG_FORMATS,
   SUPPORTED_LOG_LEVELS,
@@ -306,6 +305,8 @@ export function loadConfig(): Config {
     backfill: loadBackfillConfig(),
     logging: loadLoggingConfig(),
     api: loadApiConfig(),
+    dryRun: trimEnv('DRY_RUN') === 'true',
+    circuitBreaker: loadCircuitBreakerConfig(),
   };
 }
 
@@ -332,6 +333,22 @@ function loadApiConfig(): ApiConfig {
   return {
     maxBodyBytes: parseIntegerEnv('API_MAX_BODY_BYTES', String(DEFAULT_MAX_BODY_BYTES)),
   };
+}
+
+/**
+ * Circuit breaker configuration for RPC failure handling.
+ */
+function loadCircuitBreakerConfig(): CircuitBreakerConfig | undefined {
+  // Only return config if explicitly enabled via environment variables
+  if (trimEnv('CIRCUIT_BREAKER_ENABLED') === 'true') {
+    return {
+      failureThreshold: parseIntegerEnv('CIRCUIT_BREAKER_FAILURE_THRESHOLD', '5'),
+      recoveryTimeoutMs: parseIntegerEnv('CIRCUIT_BREAKER_RECOVERY_TIMEOUT_MS', '60000'),
+      successThreshold: parseIntegerEnv('CIRCUIT_BREAKER_SUCCESS_THRESHOLD', '2'),
+    };
+  }
+
+  return undefined;
 }
 
 /**
