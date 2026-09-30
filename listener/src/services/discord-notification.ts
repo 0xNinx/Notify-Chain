@@ -58,6 +58,9 @@ export function sanitizeForDiscord(text: string): string {
   return text
     .replace(MENTION_PATTERN, '[mention removed]')
     .replace(MARKDOWN_CHARS, '\\$1');
+}
+
+// ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
 
@@ -452,8 +455,10 @@ export class DiscordNotificationService {
           return String(value.i64());
         case StellarSDK.xdr.ScValType.scvString(): {
           const strVal = value.str().toString();
-          return strVal.length > MAX_DISCORD_FIELD_VALUE_LENGTH ? strVal.slice(0, MAX_DISCORD_FIELD_VALUE_LENGTH) + '...' : strVal;
-          const truncated = strVal.length > 500 ? strVal.slice(0, 500) + '...' : strVal;
+          const truncated =
+            strVal.length > MAX_DISCORD_FIELD_VALUE_LENGTH
+              ? `${strVal.slice(0, MAX_DISCORD_FIELD_VALUE_LENGTH)}...`
+              : strVal;
           return sanitizeForDiscord(truncated);
         }
         case StellarSDK.xdr.ScValType.scvSymbol():
