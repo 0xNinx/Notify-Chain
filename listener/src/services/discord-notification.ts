@@ -1,6 +1,6 @@
 import * as StellarSDK from '@stellar/stellar-sdk';
 import logger from '../utils/logger';
-import { ContractConfig, DiscordConfig } from '../types';
+import { ContractConfig, DiscordConfig, NotificationProvider } from '../types';
 import { getEventName } from '../utils/event-utils';
 import { NotificationDeduplicator, generateFingerprint } from './notification-deduplicator';
 import { getNotificationAnalyticsAggregator, NotificationAnalyticsAggregator } from './notification-analytics-aggregator';
@@ -87,7 +87,7 @@ async function safeReadResponseBody(response: Response, maxLength = 300): Promis
   }
 }
 
-export class DiscordNotificationService {
+export class DiscordNotificationService implements NotificationProvider {
   private config: DiscordConfig;
   private deduplicator: NotificationDeduplicator;
   private timeoutCount: number = 0;
