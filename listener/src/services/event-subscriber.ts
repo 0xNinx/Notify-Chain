@@ -16,6 +16,7 @@ import { EventDeduplicationService } from './event-deduplication-service';
 import { EventProcessingQueue } from './event-processing-queue';
 import { NotificationExpirationService } from './notification-expiration';
 import { pollingMetrics } from './polling-metrics';
+import { CircuitBreaker } from '../utils/circuit-breaker';
 import { StellarRpcManager } from './stellar-rpc-manager';
 
 export class EventSubscriber {
@@ -30,6 +31,8 @@ export class EventSubscriber {
   private eventQueue: EventProcessingQueue | null = null;
   private expirationService: NotificationExpirationService | null = null;
   private lastSuccessfulPollAt: number | null = null;
+  private circuitBreaker: CircuitBreaker | null = null;
+  private backfillStartLedger: number | null = null;
   /** Cold-start ledger resolved once per session by resolveBackfillStartLedger(). */
   private backfillStartLedger: number | null = null;
   private backfillStartLedger: number | null = null;
@@ -60,7 +63,12 @@ export class EventSubscriber {
       maxRetries: config.rpcFallback?.maxRetries,
     });
     this.deduplicationService = deduplicationService ?? null;
-    
+
+    // Initialize circuit breaker if configured
+    if (config.circuitBreaker) {
+      this.circuitBreaker = new CircuitBreaker(config.circuitBreaker);
+    }
+
     // Initialize expiration service if configured
     if (config.expiration) {
       this.expirationService = new NotificationExpirationService(config.expiration);
@@ -381,6 +389,14 @@ export class EventSubscriber {
     if (lastCursor) {
       // Normal real-time polling: continue from the last known cursor.
       request = {
+        filters: [
+          {
+            contractIds: [contractConfig.address],
+            type: 'contract',
+          },
+        ],
+        cursor: lastCursor,
+        limit: this.config.eventBatchSize,
         filters: [{ contractIds: [contractConfig.address], type: 'contract' }],
         cursor: lastCursor,
         limit,
@@ -389,6 +405,24 @@ export class EventSubscriber {
       // Cold start: apply the backfill safety limit.
       const startLedger = await this.resolveBackfillStartLedger();
       request = {
+        filters: [
+          {
+            contractIds: [contractConfig.address],
+            type: 'contract',
+          },
+        ],
+        startLedger,
+        limit: this.config.eventBatchSize,
+      };
+    }
+
+    const rpcCall = async () => this.server.getEvents(request);
+
+    if (this.circuitBreaker) {
+      return await this.circuitBreaker.execute(rpcCall);
+    }
+
+    return await rpcCall();
         filters: [{ contractIds: [contractConfig.address], type: 'contract' }],
         startLedger,
         limit,
@@ -589,5 +623,9 @@ export class EventSubscriber {
 
   getLastSuccessfulPoll(): number | null {
     return this.lastSuccessfulPollAt;
+  }
+
+  getCircuitBreakerMetrics() {
+    return this.circuitBreaker?.getMetrics() || null;
   }
 }

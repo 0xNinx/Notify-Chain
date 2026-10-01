@@ -1,3 +1,4 @@
+import { Config, ContractConfig, DiscordConfig, WebhookSecret, AppCleanupConfig, EventQueueConfig, RetrySchedulerOptions, AnalyticsConfig, ExpirationConfig, ApiKey, CircuitBreakerConfig, BackfillConfig, LoggingConfig, ApiConfig } from './types';
 import { Config, ContractConfig, DiscordConfig, WebhookSecret, AppCleanupConfig, EventQueueConfig, RetrySchedulerOptions, AnalyticsConfig, ExpirationConfig, ApiKey, BackfillConfig, LoggingConfig, ApiConfig } from './types';
 import { validateCorsOrigin, CorsValidationError } from './utils/cors-validator';
 import { validateSecrets } from './config/validate-secrets';
@@ -351,6 +352,27 @@ function loadBackfillConfig(): BackfillConfig {
   };
 }
 
+/**
+ * Load circuit breaker configuration for RPC calls.
+ *
+ * CIRCUIT_BREAKER_FAILURE_THRESHOLD: Number of consecutive failures before opening
+ * CIRCUIT_BREAKER_RECOVERY_TIMEOUT_MS: Time to wait before attempting recovery
+ * CIRCUIT_BREAKER_REQUEST_TIMEOUT_MS: Request timeout in milliseconds
+ */
+function loadCircuitBreakerConfig(): CircuitBreakerConfig | undefined {
+  const failureThreshold = trimEnv('CIRCUIT_BREAKER_FAILURE_THRESHOLD');
+  const recoveryTimeoutMs = trimEnv('CIRCUIT_BREAKER_RECOVERY_TIMEOUT_MS');
+  const requestTimeoutMs = trimEnv('CIRCUIT_BREAKER_REQUEST_TIMEOUT_MS');
+
+  // Only return config if at least one env var is set
+  if (!failureThreshold && !recoveryTimeoutMs && !requestTimeoutMs) {
+    return undefined;
+  }
+
+  return {
+    failureThreshold: failureThreshold ? parseIntegerEnv('CIRCUIT_BREAKER_FAILURE_THRESHOLD', '5') : undefined,
+    recoveryTimeoutMs: recoveryTimeoutMs ? parseIntegerEnv('CIRCUIT_BREAKER_RECOVERY_TIMEOUT_MS', '60000') : undefined,
+    requestTimeoutMs: requestTimeoutMs ? parseIntegerEnv('CIRCUIT_BREAKER_REQUEST_TIMEOUT_MS', '30000') : undefined,
 function loadRpcFallbackConfig(fallbackUrls: string[]): RpcFallbackConfig {
   const failureThreshold = parseIntegerEnv(
     'RPC_FAILURE_THRESHOLD',
@@ -459,6 +481,7 @@ export function loadConfig(): Config {
     backfill: loadBackfillConfig(),
     logging: loadLoggingConfig(),
     api: loadApiConfig(),
+    circuitBreaker: loadCircuitBreakerConfig(),
   };
 }
 

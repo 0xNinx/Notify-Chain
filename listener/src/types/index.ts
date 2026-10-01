@@ -84,6 +84,7 @@ export interface Config {
   backfill?: BackfillConfig;
   logging?: LoggingConfig;
   api?: ApiConfig;
+  circuitBreaker?: CircuitBreakerConfig;
 }
 
 /** Configurable fallback RPC endpoint settings */
@@ -257,5 +258,18 @@ export interface BackfillConfig {
    * (the previous default behaviour).  Default: 10 000.
    */
   maxLedgers: number;
+}
+
+/**
+ * Circuit breaker configuration for RPC calls to prevent continuous requests
+ * to an unavailable endpoint.
+ */
+export interface CircuitBreakerConfig {
+  /** Number of consecutive failures required to open the circuit (default: 5) */
+  failureThreshold?: number;
+  /** Time in milliseconds to wait before attempting recovery (default: 60000) */
+  recoveryTimeoutMs?: number;
+  /** Time in milliseconds to consider a request as timed out (default: 30000) */
+  requestTimeoutMs?: number;
 }
 
