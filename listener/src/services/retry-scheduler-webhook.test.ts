@@ -80,6 +80,38 @@ describe('RetryScheduler — webhook retry queue', () => {
   // ── Successful retry ──────────────────────────────────────────────────────
 
   describe('successful delivery', () => {
+    it('persists a delivered receipt for a successful retry', async () => {
+      const notification = makeWebhookNotification();
+      const repo = makeRepo({ fetchDueRetries: jest.fn().mockImplementation(() => Promise.resolve([notification])) });
+      const webhookService = {
+        deliver: jest.fn<() => Promise<any>>().mockResolvedValue({
+          success: true,
+          statusCode: 204,
+          providerMessageId: 'retry-message-1',
+          providerResponse: { statusCode: 204 },
+        }),
+      } as unknown as WebhookDeliveryService;
+      const receiptRepository = { create: jest.fn().mockImplementation(() => Promise.resolve(1)) };
+
+      const scheduler = new RetryScheduler(
+        repo,
+        RETRY_SCHEDULER_DEFAULTS,
+        null,
+        webhookService,
+        receiptRepository as any,
+      );
+      await scheduler.runOnce();
+
+      expect(receiptRepository.create).toHaveBeenCalledWith(expect.objectContaining({
+        notificationId: 10,
+        channel: 'webhook',
+        status: 'delivered',
+        attemptCount: 2,
+        providerMessageId: 'retry-message-1',
+        providerResponse: { statusCode: 204 },
+      }));
+    });
+
     it('marks the notification COMPLETED when the webhook succeeds', async () => {
       const notification = makeWebhookNotification();
       const repo = makeRepo({ fetchDueRetries: jest.fn().mockImplementation(() => Promise.resolve([notification])) });

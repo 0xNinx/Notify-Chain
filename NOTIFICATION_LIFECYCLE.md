@@ -285,6 +285,23 @@ Declared but not implemented in the scheduler today: `webhook`, `email`, `sms`.
 | Failure, retries left | back to `PENDING` + log `RETRY` |
 | Failure, retries exhausted | `FAILED` + log `FAILED` |
 
+Every scheduled provider attempt also creates an immutable `delivery_receipts`
+row with the notification ID, channel, attempt number, status, optional provider
+message ID/allowlisted response fields, and sanitized error information. Query
+receipts with the authenticated endpoint
+`GET /api/notifications/{notificationId}/receipts`; add
+`?status=delivered` or `?status=failed` to filter. For example:
+
+```sh
+curl -H 'x-api-key: YOUR_API_KEY' \
+  'http://localhost:3000/api/notifications/42/receipts?status=failed'
+```
+
+Provider response persistence keeps only operational fields such as status and
+message identifiers; credentials and recipient payload data are not stored.
+Service-level callers can query through `DeliveryReceiptRepository` using
+`findByNotificationId()` or `findByStatus()`.
+
 ### 6. Delayed retries
 
 `RetryScheduler` picks rows where `status = PENDING`, `retry_count > 0`, and

@@ -60,6 +60,8 @@ import { ResponseTimeMiddleware } from '../middleware/response-time';
 import { addSecurityHeaders } from '../middleware/security-headers';
 import { DEFAULT_MAX_BODY_BYTES, enforceBodyLimit } from '../middleware/body-limit';
 import { sanitizeUrl } from '../utils/logger';
+import { DeliveryReceiptRepository } from '../services/delivery-receipt-repository';
+import { DeliveryReceiptStatus } from '../types/delivery-receipt';
 import { API_KEY_AUTH_MESSAGES, authenticateApiKey } from './api-key-auth';
 
 export interface EventsServerOptions {
@@ -106,6 +108,8 @@ export interface EventsServerOptions {
   webhookReplayCacheMaxEntries?: number;
   /** Optional health monitor — exposes its last report at GET /api/notifications/health. */
   healthMonitor?: NotificationHealthMonitor | null;
+  /** Receipt repository for the notification delivery status endpoint. */
+  deliveryReceiptRepository?: DeliveryReceiptRepository | null;
   /**
    * Requests slower than this threshold (ms) are logged at WARN level (#491).
    * Defaults to 1 000 ms.
@@ -1353,6 +1357,37 @@ export function createEventsServer(options: EventsServerOptions): http.Server {
         return false;
       }
       return allowedKeys.some((k) => k.key === apiKey);
+    }
+
+    // Get delivery receipts for a scheduled notification
+    const receiptPath = url.pathname.match(/^\/api\/notifications\/(\d+)\/receipts$/);
+    if (req.method === 'GET' && receiptPath) {
+      const apiKey = req.headers['x-api-key'] as string | undefined;
+      if (!isValidApiKey(apiKey, options.apiKeys)) {
+        sendErr(res, 401, 'Unauthorized: Invalid or missing API key', ErrorCode.UNAUTHORIZED);
+        return;
+      }
+
+      if (!options.deliveryReceiptRepository) {
+        sendErr(res, 503, 'Delivery receipt storage is not configured', ErrorCode.SERVICE_UNAVAILABLE);
+        return;
+      }
+
+      const rawStatus = url.searchParams.get('status');
+      const statuses: DeliveryReceiptStatus[] = ['delivered', 'failed', 'rejected', 'pending'];
+      if (rawStatus && !statuses.includes(rawStatus as DeliveryReceiptStatus)) {
+        sendErr(res, 400, 'Invalid delivery receipt status', ErrorCode.BAD_REQUEST);
+        return;
+      }
+
+      options.deliveryReceiptRepository
+        .findByNotificationId(Number(receiptPath[1]), rawStatus as DeliveryReceiptStatus | undefined)
+        .then((receipts) => sendOk(res, 200, { receipts }))
+        .catch((error) => {
+          logger.error('Failed to retrieve delivery receipts', { error, requestId, correlationId });
+          sendErr(res, 500, 'Failed to retrieve delivery receipts', ErrorCode.INTERNAL_ERROR);
+        });
+      return;
     }
 
     // Get notification delivery history endpoint
