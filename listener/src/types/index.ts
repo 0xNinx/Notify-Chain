@@ -1,4 +1,15 @@
 import type { RetryFailureType } from '../services/retry-policy';
+import * as StellarSDK from '@stellar/stellar-sdk';
+
+export interface NotificationProvider {
+  sendEventNotification(
+    event: StellarSDK.rpc.Api.EventResponse,
+    contractConfig: ContractConfig,
+    requestId?: string
+  ): Promise<boolean>;
+
+  sendTestMessage(requestId?: string): Promise<boolean>;
+}
 
 export interface ContractConfig {
   address: string;
@@ -45,6 +56,9 @@ export interface ApiKey {
 export interface Config {
   stellarNetwork: string;
   stellarRpcUrl: string;
+  stellarRpcFallbackUrls?: string[];
+  stellarRpcUrls?: string[];
+  rpcFallback?: RpcFallbackConfig;
   stellarNetworkPassphrase: string;
   contractAddresses: ContractConfig[];
   pollIntervalMs: number;
@@ -70,6 +84,34 @@ export interface Config {
   backfill?: BackfillConfig;
   logging?: LoggingConfig;
   api?: ApiConfig;
+}
+
+/** Configurable fallback RPC endpoint settings */
+export interface RpcFallbackConfig {
+  /** Array of fallback RPC URLs to try when primary fails */
+  fallbackUrls: string[];
+  /** Number of consecutive failures before marking endpoint unhealthy and failing over (default: 3) */
+  failureThreshold: number;
+  /** Cooldown duration in ms before attempting to reuse a failed endpoint (default: 60000) */
+  cooldownMs: number;
+  /** Timeout for RPC requests in milliseconds (default: 10000) */
+  requestTimeoutMs: number;
+  /** Maximum number of endpoint retries for a single operation across pool (default: pool size) */
+  maxRetries?: number;
+}
+
+/** Operational status metrics for an RPC endpoint */
+export interface RpcEndpointStatus {
+  url: string;
+  isPrimary: boolean;
+  status: 'healthy' | 'degraded' | 'unhealthy';
+  consecutiveFailures: number;
+  totalRequests: number;
+  totalSuccesses: number;
+  totalFailures: number;
+  lastFailureTime: number | null;
+  lastSuccessTime: number | null;
+  lastError: string | null;
 }
 
 /** Observability settings, sourced from LOG_LEVEL / LOG_FORMAT. */

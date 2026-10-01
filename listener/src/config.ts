@@ -1,4 +1,4 @@
-import { Config, ContractConfig, DiscordConfig, WebhookSecret, AppCleanupConfig, EventQueueConfig, RetrySchedulerOptions, AnalyticsConfig, ExpirationConfig, ApiKey } from './types';
+import { Config, ContractConfig, DiscordConfig, WebhookSecret, AppCleanupConfig, EventQueueConfig, RetrySchedulerOptions, AnalyticsConfig, ExpirationConfig, ApiKey, BackfillConfig, LoggingConfig, ApiConfig } from './types';
 import { validateCorsOrigin, CorsValidationError } from './utils/cors-validator';
 import { ConfigurationSchemaValidator, APP_CONFIG_SCHEMA } from './config-schema';
 import { Config, ContractConfig, DiscordConfig, WebhookSecret, AppCleanupConfig, EventQueueConfig, RetrySchedulerOptions, AnalyticsConfig, ExpirationConfig, ApiKey, BackfillConfig, LoggingConfig, ApiConfig, RetryPolicyOptions } from './types';
@@ -8,6 +8,10 @@ import {
   RetryFailureType,
   parseRetryableFailureTypes,
 } from './services/retry-policy';
+import { validateCorsOrigin, CorsValidationError } from './utils/cors-validator';
+import { ConfigurationSchemaValidator, APP_CONFIG_SCHEMA } from './config-schema';
+import { Config, ContractConfig, DiscordConfig, WebhookSecret, AppCleanupConfig, EventQueueConfig, RetrySchedulerOptions, AnalyticsConfig, ExpirationConfig, ApiKey, BackfillConfig, LoggingConfig, ApiConfig, RpcFallbackConfig } from './types';
+import { validateSecrets } from './config/validate-secrets';
 import {
   SUPPORTED_LOG_FORMATS,
   SUPPORTED_LOG_LEVELS,
@@ -63,9 +67,32 @@ function parseJsonEnv<T>(name: string, defaultValue: string): T {
   }
 }
 
+function parseStringListEnv(name: string): string[] {
+  const raw = trimEnv(name);
+  if (!raw) return [];
+  if (raw.startsWith('[') && raw.endsWith(']')) {
+    try {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        return parsed.map((item) => String(item).trim()).filter(Boolean);
+      }
+    } catch {
+      throw new ConfigError(`${name} must be valid JSON array of URL strings. Received: ${raw}`);
+    }
+  }
+  return raw.split(',').map((s) => s.trim()).filter(Boolean);
+}
+
 function validateContractAddresses(value: unknown): ContractConfig[] {
   if (!Array.isArray(value)) {
     throw new ConfigError('CONTRACT_ADDRESSES must be a JSON array of contract objects.');
+  }
+
+  if (value.length === 0) {
+    throw new ConfigError(
+      'CONTRACT_ADDRESSES is empty. The listener requires at least one contract to monitor. ' +
+        'Add contract configurations or the service will not process any events.'
+    );
   }
 
   return value.map((item, index) => {
@@ -288,6 +315,31 @@ function loadBackfillConfig(): BackfillConfig {
   };
 }
 
+function loadRpcFallbackConfig(fallbackUrls: string[]): RpcFallbackConfig {
+  const failureThreshold = parseIntegerEnv(
+    'RPC_FAILURE_THRESHOLD',
+    trimEnv('STELLAR_RPC_FAILURE_THRESHOLD') || '3'
+  );
+  const cooldownMs = parseIntegerEnv(
+    'RPC_COOLDOWN_MS',
+    trimEnv('STELLAR_RPC_COOLDOWN_MS') || '60000'
+  );
+  const requestTimeoutMs = parseIntegerEnv(
+    'RPC_REQUEST_TIMEOUT_MS',
+    trimEnv('STELLAR_RPC_REQUEST_TIMEOUT_MS') || '10000'
+  );
+  const maxRetriesRaw = trimEnv('RPC_MAX_RETRIES') || trimEnv('STELLAR_RPC_MAX_RETRIES');
+  const maxRetries = maxRetriesRaw ? parseIntegerEnv('RPC_MAX_RETRIES', maxRetriesRaw) : undefined;
+
+  return {
+    fallbackUrls,
+    failureThreshold,
+    cooldownMs,
+    requestTimeoutMs,
+    maxRetries,
+  };
+}
+
 export function loadConfig(): Config {
   validateRequiredEnvVars();
 
@@ -301,10 +353,29 @@ export function loadConfig(): Config {
     '{}'
   );
 
+  const explicitRpcUrl = trimEnv('STELLAR_RPC_URL');
+  const allRpcUrlsFromEnv = parseStringListEnv('STELLAR_RPC_URLS');
+  const explicitFallbacks = parseStringListEnv('STELLAR_RPC_FALLBACK_URLS');
+
+  const primaryRpcUrl =
+    explicitRpcUrl || allRpcUrlsFromEnv[0] || 'https://soroban-testnet.stellar.org:443';
+
+  const combinedFallbacks = Array.from(
+    new Set([
+      ...explicitFallbacks,
+      ...(allRpcUrlsFromEnv.length > 1 ? allRpcUrlsFromEnv.slice(1) : []),
+    ])
+  ).filter((url) => url !== primaryRpcUrl);
+
+  const rpcFallback = loadRpcFallbackConfig(combinedFallbacks);
+  const stellarRpcUrls = [primaryRpcUrl, ...combinedFallbacks];
+
   return {
     stellarNetwork: trimEnv('STELLAR_NETWORK') || 'testnet',
-    stellarRpcUrl:
-      trimEnv('STELLAR_RPC_URL') || 'https://soroban-testnet.stellar.org:443',
+    stellarRpcUrl: primaryRpcUrl,
+    stellarRpcFallbackUrls: combinedFallbacks,
+    stellarRpcUrls,
+    rpcFallback,
     stellarNetworkPassphrase: trimEnv('STELLAR_NETWORK_PASSPHRASE') || 'Test SDF Network ; September 2015',
     contractAddresses: validateContractAddresses(rawContractAddresses),
     pollIntervalMs: parseIntegerEnv('POLL_INTERVAL_MS', '30000'),
@@ -406,6 +477,46 @@ export function validateConfig(config: Config): void {
     } catch {
       errors.push(
         `STELLAR_RPC_URL is not a valid URL (received: "${config.stellarRpcUrl}").`,
+      );
+    }
+  }
+
+  // Validate Fallback RPC URLs
+  if (config.stellarRpcFallbackUrls && Array.isArray(config.stellarRpcFallbackUrls)) {
+    for (const [idx, fbUrl] of config.stellarRpcFallbackUrls.entries()) {
+      if (!fbUrl || typeof fbUrl !== 'string' || fbUrl.trim() === '') {
+        errors.push(`Fallback RPC URL at index ${idx} must be a non-empty string.`);
+        continue;
+      }
+      try {
+        const url = new URL(fbUrl);
+        if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+          errors.push(
+            `Fallback RPC URL at index ${idx} must use HTTP or HTTPS protocol (received: "${url.protocol}").`
+          );
+        }
+      } catch {
+        errors.push(
+          `Fallback RPC URL at index ${idx} is not a valid URL (received: "${fbUrl}").`
+        );
+      }
+    }
+  }
+
+  if (config.rpcFallback) {
+    if (config.rpcFallback.failureThreshold < 1) {
+      errors.push(
+        `RPC_FAILURE_THRESHOLD must be >= 1 (received: ${config.rpcFallback.failureThreshold}).`
+      );
+    }
+    if (config.rpcFallback.cooldownMs < 0) {
+      errors.push(
+        `RPC_COOLDOWN_MS must be >= 0 (received: ${config.rpcFallback.cooldownMs}).`
+      );
+    }
+    if (config.rpcFallback.requestTimeoutMs < 500) {
+      errors.push(
+        `RPC_REQUEST_TIMEOUT_MS must be at least 500 ms (received: ${config.rpcFallback.requestTimeoutMs}).`
       );
     }
   }
