@@ -67,7 +67,7 @@ async function main() {
     const db = await initializeDatabase(config.databasePath);
 
     repository = new ScheduledNotificationRepository(db);
-    
+
     healthMonitor = new NotificationHealthMonitor(null, getWorkerManager(), {
       repository,
       getLastSuccessfulPoll: () => subscriber?.getLastSuccessfulPoll() ?? null,
@@ -211,11 +211,11 @@ async function main() {
         await retryScheduler.stop();
       }
 
-    if (subscriber) {
-      await subscriber.stop();
-    }
+      if (subscriber) {
+        await subscriber.stop();
+      }
 
-    eventsServer.close();
+      eventsServer.close();
 
       logger.info('Graceful shutdown completed successfully', { signal });
       process.exit(0);
