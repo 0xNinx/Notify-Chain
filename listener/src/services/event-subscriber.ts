@@ -16,10 +16,11 @@ import { EventDeduplicationService } from './event-deduplication-service';
 import { EventProcessingQueue } from './event-processing-queue';
 import { NotificationExpirationService } from './notification-expiration';
 import { pollingMetrics } from './polling-metrics';
+import { StellarRpcManager } from './stellar-rpc-manager';
 
 export class EventSubscriber {
   private config: Config;
-  private server: StellarSDK.rpc.Server;
+  private rpcManager: StellarRpcManager;
   private isRunning: boolean = false;
   private reconnectAttempts: number = 0;
   private lastCursors: Map<string, string> = new Map();
@@ -31,10 +32,33 @@ export class EventSubscriber {
   private lastSuccessfulPollAt: number | null = null;
   /** Cold-start ledger resolved once per session by resolveBackfillStartLedger(). */
   private backfillStartLedger: number | null = null;
+  private backfillStartLedger: number | null = null;
+
+  public get server(): StellarSDK.rpc.Server {
+    return this.rpcManager.getActiveServer();
+  }
+
+  public set server(val: StellarSDK.rpc.Server) {
+    const activeIndex = (this.rpcManager as any).activeIndex;
+    if ((this.rpcManager as any).endpoints && (this.rpcManager as any).endpoints[activeIndex]) {
+      (this.rpcManager as any).endpoints[activeIndex].server = val;
+    }
+  }
+
+  public getRpcManager(): StellarRpcManager {
+    return this.rpcManager;
+  }
 
   constructor(config: Config, deduplicationService?: EventDeduplicationService) {
     this.config = config;
-    this.server = new StellarSDK.rpc.Server(config.stellarRpcUrl);
+    this.rpcManager = new StellarRpcManager({
+      primaryUrl: config.stellarRpcUrl,
+      fallbackUrls: config.stellarRpcFallbackUrls,
+      failureThreshold: config.rpcFallback?.failureThreshold,
+      cooldownMs: config.rpcFallback?.cooldownMs,
+      requestTimeoutMs: config.rpcFallback?.requestTimeoutMs,
+      maxRetries: config.rpcFallback?.maxRetries,
+    });
     this.deduplicationService = deduplicationService ?? null;
     
     // Initialize expiration service if configured
@@ -42,19 +66,29 @@ export class EventSubscriber {
       this.expirationService = new NotificationExpirationService(config.expiration);
     }
     
+    // Retry policy (#842): attempt budget and eligible failure types are
+    // shared by both in-memory queues so a permanent failure is not retried
+    // regardless of which path a notification took.
+    const retryPolicy = config.retryPolicy
+      ? {
+          maxAttempts: config.retryPolicy.maxAttempts,
+          retryableFailureTypes: config.retryPolicy.retryableFailureTypes,
+        }
+      : undefined;
+
     if (config.discord) {
       this.discordService = new DiscordNotificationService(config.discord);
       this.retryQueue = new NotificationRetryQueue(
         (event, contractConfig, requestId) =>
           this.discordService!.sendEventNotification(event, contractConfig, requestId),
-        config.retryQueue
+        { ...config.retryQueue, retryPolicy }
       );
     }
     if (config.eventQueue) {
       this.eventQueue = new EventProcessingQueue(
         (event, contractConfig, requestId) =>
           this.processEvent(event, contractConfig, requestId),
-        config.eventQueue
+        { ...config.eventQueue, retryPolicy }
       );
     }
   }
@@ -240,8 +274,8 @@ export class EventSubscriber {
     correlationId: string = requestId
   ): boolean {
     // Check if event has expired
-    if (this.expirationService && !this.expirationService.shouldProcess(event)) {
-      const eventName = getEventName(event.topic);
+    const eventName = getEventName(event.topic);
+    if (this.expirationService && !this.expirationService.shouldProcess(event, eventName || undefined)) {
       logger.warn('Skipping expired notification', {
         requestId,
         contractAddress: contractConfig.address,
@@ -266,7 +300,6 @@ export class EventSubscriber {
       return false;
     }
 
-    const eventName = getEventName(event.topic);
     if (!matchesEventFilter(eventName, contractConfig.events)) {
       return false;
     }
@@ -300,7 +333,10 @@ export class EventSubscriber {
     }
 
     try {
-      const latest: any = await (this.server as any).getLatestLedger();
+      const latest: any = await this.rpcManager.executeWithFallback(
+        (server) => (server as any).getLatestLedger(),
+        { operationName: 'getLatestLedger' }
+      );
       const tip: number | null =
         typeof latest?.sequence === 'number'
           ? latest.sequence
@@ -360,6 +396,32 @@ export class EventSubscriber {
     }
 
     return await this.server.getEvents(request);
+    const request: StellarSDK.rpc.Api.GetEventsRequest = lastCursor
+      ? {
+          filters: [
+            {
+              contractIds: [contractConfig.address],
+              type: 'contract',
+            },
+          ],
+          cursor: lastCursor,
+          limit: this.config.eventBatchSize,
+        }
+      : {
+          filters: [
+            {
+              contractIds: [contractConfig.address],
+              type: 'contract',
+            },
+          ],
+          startLedger: await this.resolveBackfillStartLedger(),
+          limit: this.config.eventBatchSize,
+        };
+
+    return await this.rpcManager.executeWithFallback(
+      (server) => server.getEvents(request),
+      { operationName: `getEvents(${contractConfig.address})` }
+    );
   }
 
   private async processEvent(
@@ -368,6 +430,7 @@ export class EventSubscriber {
     requestId: string = '',
     correlationId: string = ''
   ): Promise<boolean> {
+    correlationId = correlationId || requestId || generateCorrelationId();
     const eventStart = Date.now();
     const eventName = getEventName(event.topic);
 

@@ -12,15 +12,15 @@ import { generateRequestId, resolveCorrelationId } from '../utils/request-id';
 import { TemplateService } from '../services/template-service';
 import { handleTemplateRoutes } from './template-routes';
 import { sendOk, sendErr, sendJson, ErrorCode } from '../utils/response';
+import { normalizePaginationParams } from '../utils/pagination';
 import { handleApiError, ApiError } from './error-handler';
 import { applyRequestContext } from '../utils/request-id';
 import { applyRequestIdMiddleware } from '../middleware/request-id';
-import { TemplateService } from '../services/template-service';
-import { handleTemplateRoutes } from './template-routes';
 import { NotificationHistoryService } from '../services/notification-history';
 import { SearchSuggestionService } from '../services/search-suggestion';
 import { NotificationSearchService } from '../services/notification-search-service';
 import { collectRawBody, verifyWebhookRequest } from '../services/webhook-verifier';
+import { WebhookReplayCache } from '../services/webhook-replay-cache';
 import { IdempotencyKeyService, IdempotencyKeyReuseError } from '../services/idempotency-key-service';
 import { WebhookSecret, RateLimitConfig, ContractConfig } from '../types';
 import { RateLimiter } from './rate-limiter';
@@ -88,6 +88,17 @@ export interface EventsServerOptions {
   metricsStore?: NotificationMetricsStore | null;
   /** Maximum age of signed requests in seconds (default: 300 = 5 minutes). */
   signatureExpirationSeconds?: number;
+  /**
+   * Require `X-Webhook-Timestamp` on inbound webhooks (default: true).
+   * Without it a captured request is signed over the bare body and remains
+   * valid forever. Set to false only for legacy senders that cannot be changed.
+   */
+  requireWebhookTimestamp?: boolean;
+  /**
+   * Maximum number of recently accepted webhook signatures retained by the
+   * replay cache (default: 10000).
+   */
+  webhookReplayCacheMaxEntries?: number;
   /** Optional health monitor — exposes its last report at GET /api/notifications/health. */
   healthMonitor?: NotificationHealthMonitor | null;
   /**
@@ -421,6 +432,13 @@ export function createEventsServer(options: EventsServerOptions): http.Server {
   const suggestionService = new SearchSuggestionService();
   const notificationSearchService = new NotificationSearchService();
   const rateLimiter = options.rateLimit ? new RateLimiter(options.rateLimit) : undefined;
+  // Replay protection (#853): remembers every signature we accepted inside the
+  // freshness window so a captured request cannot be resubmitted. Kept
+  // independent of the optional client-supplied `Idempotency-Key` header,
+  // which an attacker replaying a request would simply omit.
+  const webhookReplayCache = new WebhookReplayCache({
+    maxEntries: options.webhookReplayCacheMaxEntries ?? 10_000,
+  });
   // Response-time tracking (#491)
   const responseTime =
     options.responseTimeMiddleware !== undefined && options.responseTimeMiddleware !== null
@@ -564,13 +582,13 @@ export function createEventsServer(options: EventsServerOptions): http.Server {
     // GET /api/events
     if (req.method === 'GET' && url.pathname.startsWith('/api/events')) {
       const limitParam = url.searchParams.get('limit');
-      const limit = limitParam ? parseInt(limitParam, 10) : undefined;
-      const events =
-        limit !== undefined && !Number.isNaN(limit)
-          ? eventRegistry.getEvents(limit)
-          : eventRegistry.getEvents();
+      const parsedLimit = limitParam ? parseInt(limitParam, 10) : undefined;
+      const paginationParams = normalizePaginationParams(
+        parsedLimit !== undefined && !Number.isNaN(parsedLimit) ? parsedLimit : undefined
+      );
+      const events = eventRegistry.getEvents(paginationParams.limit);
 
-      logger.info('Handling GET /api/events', { requestId, correlationId, limit: limit ?? 'all' });
+      logger.info('Handling GET /api/events', { requestId, correlationId, limit: paginationParams.limit });
 
       sendOk(res, 200, { count: eventRegistry.count(), events });
 
@@ -700,8 +718,14 @@ export function createEventsServer(options: EventsServerOptions): http.Server {
 
         const secrets = options.webhookSecrets ?? [];
         const maxAgeSeconds = options.signatureExpirationSeconds ?? 300;
+        
+        // Use default database for audit log or mock one if not available.
+        // Actually since SecurityAuditService requires Database, let's pass a real one.
+        const db = getDatabase();
+        const { SecurityAuditService } = require('../services/security-audit');
+        const auditService = new SecurityAuditService(db);
 
-        const auth = verifyWebhookRequest({
+        const auth = await verifyWebhookRequest({
           headers: req.headers as Record<string, string | string[] | undefined>,
           rawBody,
           secrets,
@@ -709,6 +733,9 @@ export function createEventsServer(options: EventsServerOptions): http.Server {
           requestId,
           correlationId,
           maxAgeSeconds,
+          requireTimestamp: options.requireWebhookTimestamp !== false,
+          replayCache: webhookReplayCache,
+          auditService,
         });
 
         if (!auth.authenticated) {
