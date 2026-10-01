@@ -71,13 +71,7 @@ async function main() {
     healthMonitor = new NotificationHealthMonitor(null, getWorkerManager(), {
       repository,
       getLastSuccessfulPoll: () => subscriber?.getLastSuccessfulPoll() ?? null,
-    });
-
       getUptimeMs: () => Date.now() - PROCESS_START_TIME,
-    });
-
-    healthMonitor = new NotificationHealthMonitor(null, getWorkerManager(), {
-      repository,
     });
 
     // Rebuild registry with configured event TTL
@@ -173,8 +167,7 @@ async function main() {
     healthMonitor.start();
   }
 
-  subscriber = new EventSubscriber(config, deduplicationService);
-  const subscriber = new EventSubscriber(config, deduplicationService ?? undefined);
+  subscriber = new EventSubscriber(config, deduplicationService ?? undefined);
   await subscriber.start();
 
   let isShuttingDown = false;

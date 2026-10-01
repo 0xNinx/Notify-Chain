@@ -172,6 +172,17 @@ export const APP_CONFIG_SCHEMA: ConfigSchema = {
     required: true,
     pattern: /^https?:\/\//,
   },
+  stellarRpcFallbackUrls: {
+    type: 'array',
+  },
+  stellarRpcUrls: {
+    type: 'array',
+  },
+  rpcFallback: {
+    failureThreshold: { type: 'number', min: 1 },
+    cooldownMs: { type: 'number', min: 0 },
+    requestTimeoutMs: { type: 'number', min: 500 },
+  },
   stellarNetworkPassphrase: {
     type: 'string',
     required: true,
