@@ -237,7 +237,14 @@ export const APP_CONFIG_SCHEMA: ConfigSchema = {
     snapshotRetentionDays: { type: 'number', min: 1 },
   },
   cleanup: {
+    enabled: { type: 'boolean' },
     intervalMs: { type: 'number', min: 60000 },
+    retentionDays: { type: 'number', min: 1 },
+    retentionOverridesMs: {
+      processedEvents: { type: 'number', min: 60000 },
+      executionLogs: { type: 'number', min: 60000 },
+      rateLimitEvents: { type: 'number', min: 60000 },
+    },
     notificationRetentionMs: { type: 'number', min: 60000 },
     rateLimitEventRetentionMs: { type: 'number', min: 60000 },
     eventRetentionMs: { type: 'number', min: 60000 },

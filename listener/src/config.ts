@@ -2,6 +2,7 @@ import { Config, ContractConfig, DiscordConfig, WebhookSecret, AppCleanupConfig,
 import { validateCorsOrigin, CorsValidationError } from './utils/cors-validator';
 import { validateSecrets } from './config/validate-secrets';
 import { ConfigurationSchemaValidator, APP_CONFIG_SCHEMA } from './config-schema';
+import { Config, ContractConfig, DiscordConfig, WebhookSecret, AppCleanupConfig, EventQueueConfig, RetrySchedulerOptions, AnalyticsConfig, ExpirationConfig, ApiKey, BackfillConfig, LoggingConfig, ApiConfig } from './types';
 import { Config, ContractConfig, DiscordConfig, WebhookSecret, AppCleanupConfig, EventQueueConfig, RetrySchedulerOptions, AnalyticsConfig, ExpirationConfig, ApiKey, BackfillConfig, LoggingConfig, ApiConfig, RetryPolicyOptions } from './types';
 import {
   DEFAULT_RETRYABLE_FAILURE_TYPES,
@@ -57,6 +58,27 @@ function parseIntegerEnv(name: string, defaultValue: string): number {
     throw new ConfigError(`${name} must be a valid integer, got "${value}"`);
   }
   return parsed;
+}
+
+function parseStrictIntegerEnv(name: string, defaultValue: string): number {
+  const rawValue = trimEnv(name);
+  if (rawValue !== undefined && !/^-?\d+$/.test(rawValue)) {
+    throw new ConfigError(`${name} must be a valid integer, got "${rawValue}"`);
+  }
+  return parseIntegerEnv(name, defaultValue);
+}
+
+function parseBooleanEnv(name: string, defaultValue: boolean): boolean {
+  const rawValue = trimEnv(name);
+  if (rawValue === undefined) return defaultValue;
+  if (rawValue === 'true') return true;
+  if (rawValue === 'false') return false;
+  throw new ConfigError(`${name} must be either "true" or "false", got "${rawValue}"`);
+}
+
+function parseOptionalIntegerEnv(name: string): number | undefined {
+  const rawValue = trimEnv(name);
+  return rawValue ? parseStrictIntegerEnv(name, rawValue) : undefined;
 }
 
 function parseJsonEnv<T>(name: string, defaultValue: string): T {
@@ -196,19 +218,32 @@ function validateApiKeys(value: unknown): ApiKey[] {
 }
 
 function loadCleanupConfig(): AppCleanupConfig {
+  const processedEventRetentionMs = parseIntegerEnv(
+    'PROCESSED_EVENT_RETENTION_MS',
+    String(30 * 24 * 60 * 60 * 1000),
+  );
+  const executionLogRetentionMs = parseIntegerEnv(
+    'EXECUTION_LOG_RETENTION_MS',
+    String(90 * 24 * 60 * 60 * 1000),
+  );
+  const rateLimitEventRetentionMs = parseIntegerEnv(
+    'RATE_LIMIT_EVENT_RETENTION_MS',
+    String(24 * 60 * 60 * 1000),
+  );
   return {
-    intervalMs: parseIntegerEnv('CLEANUP_INTERVAL_MS', String(60 * 60 * 1000)),
+    enabled: parseBooleanEnv('CLEANUP_ENABLED', true),
+    intervalMs: parseStrictIntegerEnv('CLEANUP_INTERVAL_MS', String(60 * 60 * 1000)),
+    retentionDays: parseStrictIntegerEnv('CLEANUP_RETENTION_DAYS', '30'),
+    retentionOverridesMs: {
+      processedEvents: parseOptionalIntegerEnv('PROCESSED_EVENT_RETENTION_MS'),
+      executionLogs: parseOptionalIntegerEnv('EXECUTION_LOG_RETENTION_MS'),
+      rateLimitEvents: parseOptionalIntegerEnv('RATE_LIMIT_EVENT_RETENTION_MS'),
+    },
     notificationRetentionMs: parseIntegerEnv('NOTIFICATION_RETENTION_MS', String(7 * 24 * 60 * 60 * 1000)),
-    rateLimitEventRetentionMs: parseIntegerEnv('RATE_LIMIT_EVENT_RETENTION_MS', String(24 * 60 * 60 * 1000)),
+    rateLimitEventRetentionMs,
     eventRetentionMs: parseIntegerEnv('EVENT_RETENTION_MS', String(24 * 60 * 60 * 1000)),
-    processedEventRetentionMs: parseIntegerEnv(
-      'PROCESSED_EVENT_RETENTION_MS',
-      String(30 * 24 * 60 * 60 * 1000),
-    ),
-    executionLogRetentionMs: parseIntegerEnv(
-      'EXECUTION_LOG_RETENTION_MS',
-      String(90 * 24 * 60 * 60 * 1000),
-    ),
+    processedEventRetentionMs,
+    executionLogRetentionMs,
   };
 }
 
@@ -802,6 +837,11 @@ export function validateConfig(config: Config): void {
       errors.push(
         `PROCESSED_EVENT_RETENTION_MS must be >= 60000 ms ` +
           `(received: ${config.cleanup.processedEventRetentionMs}).`,
+      );
+    }
+    if (config.cleanup.retentionDays < 1) {
+      errors.push(
+        `CLEANUP_RETENTION_DAYS must be >= 1 (received: ${config.cleanup.retentionDays}).`,
       );
     }
   }
