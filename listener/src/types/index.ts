@@ -1,3 +1,4 @@
+import type { RetryFailureType } from '../services/retry-policy';
 import * as StellarSDK from '@stellar/stellar-sdk';
 
 export interface NotificationProvider {
@@ -74,6 +75,7 @@ export interface Config {
   apiKeys?: ApiKey[];
   scheduler?: SchedulerConfig;
   retryScheduler?: RetrySchedulerOptions;
+  retryPolicy?: RetryPolicyOptions;
   databasePath?: string;
   rateLimit?: RateLimitConfig;
   cleanup?: AppCleanupConfig;
@@ -178,6 +180,34 @@ export interface RetrySchedulerOptions {
   multiplier: number;
   maxDelayMs: number;
   jitter: boolean;
+  /**
+   * Retry-policy ceiling on total attempts. Mirrors `RetrySchedulerConfig`;
+   * `undefined` leaves each notification's own `maxRetries` in control.
+   */
+  maxAttempts?: number;
+  /** Failure types eligible for retry. Mirrors `RetrySchedulerConfig`. */
+  retryableFailureTypes?: RetryFailureType[];
+}
+
+/**
+ * Retry policy settings (#842).
+ *
+ * Controls the three knobs that decide whether a failed notification delivery
+ * is attempted again:
+ *   - `maxAttempts` — hard ceiling on total attempts. `undefined` leaves each
+ *     notification's own `max_retries` in control; `1` disables retries.
+ *   - `retryableFailureTypes` — the failure types eligible for retry. Anything
+ *     not listed fails on its first attempt.
+ *
+ * The delay curve reuses the existing `RETRY_BASE_DELAY_MS`,
+ * `RETRY_MULTIPLIER`, `RETRY_MAX_DELAY_MS` and `RETRY_JITTER` variables, which
+ * the retry scheduler and the in-memory retry queue already share.
+ */
+export interface RetryPolicyOptions {
+  /** Hard ceiling on delivery attempts; `undefined` means no ceiling. */
+  maxAttempts?: number;
+  /** Failure types eligible for retry. */
+  retryableFailureTypes: RetryFailureType[];
 }
 
 export interface AnalyticsConfig {

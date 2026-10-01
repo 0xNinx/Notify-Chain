@@ -1,6 +1,13 @@
 import { Config, ContractConfig, DiscordConfig, WebhookSecret, AppCleanupConfig, EventQueueConfig, RetrySchedulerOptions, AnalyticsConfig, ExpirationConfig, ApiKey, BackfillConfig, LoggingConfig, ApiConfig } from './types';
 import { validateCorsOrigin, CorsValidationError } from './utils/cors-validator';
 import { ConfigurationSchemaValidator, APP_CONFIG_SCHEMA } from './config-schema';
+import { Config, ContractConfig, DiscordConfig, WebhookSecret, AppCleanupConfig, EventQueueConfig, RetrySchedulerOptions, AnalyticsConfig, ExpirationConfig, ApiKey, BackfillConfig, LoggingConfig, ApiConfig, RetryPolicyOptions } from './types';
+import {
+  DEFAULT_RETRYABLE_FAILURE_TYPES,
+  RETRY_FAILURE_TYPES,
+  RetryFailureType,
+  parseRetryableFailureTypes,
+} from './services/retry-policy';
 import { validateCorsOrigin, CorsValidationError } from './utils/cors-validator';
 import { ConfigurationSchemaValidator, APP_CONFIG_SCHEMA } from './config-schema';
 import { Config, ContractConfig, DiscordConfig, WebhookSecret, AppCleanupConfig, EventQueueConfig, RetrySchedulerOptions, AnalyticsConfig, ExpirationConfig, ApiKey, BackfillConfig, LoggingConfig, ApiConfig, RpcFallbackConfig } from './types';
@@ -215,7 +222,7 @@ function loadAnalyticsConfig(): AnalyticsConfig {
   };
 }
 
-function loadRetrySchedulerConfig(): RetrySchedulerOptions {
+function loadRetrySchedulerConfig(policy: RetryPolicyOptions): RetrySchedulerOptions {
   return {
     enabled: trimEnv('RETRY_SCHEDULER_ENABLED') !== 'false',
     pollIntervalMs: parseIntegerEnv('RETRY_SCHEDULER_POLL_INTERVAL_MS', '15000'),
@@ -226,7 +233,45 @@ function loadRetrySchedulerConfig(): RetrySchedulerOptions {
     multiplier: parseIntegerEnv('RETRY_MULTIPLIER', '2'),
     maxDelayMs: parseIntegerEnv('RETRY_MAX_DELAY_MS', String(60 * 60 * 1000)),
     jitter: trimEnv('RETRY_JITTER') !== 'false',
+    // Policy knobs are owned by the retry policy; fold them in so the scheduler
+    // and the in-memory queues agree on the attempt budget and on which failure
+    // types are worth retrying.
+    maxAttempts: policy.maxAttempts,
+    retryableFailureTypes: policy.retryableFailureTypes,
   };
+}
+
+/**
+ * Load the notification retry policy (#842).
+ *
+ * The delay curve deliberately reuses `RETRY_BASE_DELAY_MS` / `RETRY_MULTIPLIER`
+ * / `RETRY_MAX_DELAY_MS` / `RETRY_JITTER`, which the retry scheduler and the
+ * in-memory retry queue already share, so there is a single knob per concern.
+ *
+ *   RETRY_POLICY_MAX_ATTEMPTS               - hard ceiling on attempts (unset = no ceiling)
+ *   RETRY_POLICY_RETRYABLE_FAILURE_TYPES    - comma-separated eligible failure types
+ */
+function loadRetryPolicyConfig(): RetryPolicyOptions {
+  const rawMaxAttempts = trimEnv('RETRY_POLICY_MAX_ATTEMPTS');
+  const maxAttempts =
+    rawMaxAttempts === undefined || rawMaxAttempts === ''
+      ? undefined
+      : parseIntegerEnv('RETRY_POLICY_MAX_ATTEMPTS', '1');
+
+  let retryableFailureTypes: RetryFailureType[];
+  try {
+    retryableFailureTypes =
+      parseRetryableFailureTypes(trimEnv('RETRY_POLICY_RETRYABLE_FAILURE_TYPES')) ??
+      [...DEFAULT_RETRYABLE_FAILURE_TYPES];
+  } catch (err) {
+    throw new ConfigError(
+      `RETRY_POLICY_RETRYABLE_FAILURE_TYPES is invalid: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+  }
+
+  return { maxAttempts, retryableFailureTypes };
 }
 
 function loadExpirationConfig(): ExpirationConfig {
@@ -299,6 +344,7 @@ export function loadConfig(): Config {
   validateRequiredEnvVars();
 
   const discord = loadDiscordConfig();
+  const retryPolicy = loadRetryPolicyConfig();
   const rawContractAddresses = parseJsonEnv<unknown>('CONTRACT_ADDRESSES', '[]');
   const rawWebhookSecrets = parseJsonEnv<unknown>('WEBHOOK_SECRETS', '[]');
   const rawApiKeys = parseJsonEnv<unknown>('API_KEYS', '[]');
@@ -363,7 +409,8 @@ export function loadConfig(): Config {
       batchSize: parseIntegerEnv('SCHEDULER_BATCH_SIZE', '10'),
       timingBufferMs: parseIntegerEnv('SCHEDULER_TIMING_BUFFER_MS', '60000'),
     },
-    retryScheduler: loadRetrySchedulerConfig(),
+    retryScheduler: loadRetrySchedulerConfig(retryPolicy),
+    retryPolicy,
     rateLimit: {
       enabled: trimEnv('RATE_LIMIT_ENABLED') !== 'false',
       windowMs: parseIntegerEnv('RATE_LIMIT_WINDOW_MS', '60000'),
@@ -667,6 +714,37 @@ export function validateConfig(config: Config): void {
       errors.push(
         `RETRY_SCHEDULER_BATCH_SIZE must be >= 1 (received: ${config.retryScheduler.batchSize}).`,
       );
+    }
+  }
+
+  // ── Retry policy (#842) ───────────────────────────────────────────────────
+  if (config.retryPolicy) {
+    if (
+      config.retryPolicy.maxAttempts !== undefined &&
+      config.retryPolicy.maxAttempts < 1
+    ) {
+      errors.push(
+        `RETRY_POLICY_MAX_ATTEMPTS must be >= 1 (received: ${config.retryPolicy.maxAttempts}). ` +
+          'A value of 1 disables retries entirely.',
+      );
+    }
+    if (!Array.isArray(config.retryPolicy.retryableFailureTypes)) {
+      errors.push('RETRY_POLICY_RETRYABLE_FAILURE_TYPES must be a list of failure types.');
+    } else if (config.retryPolicy.retryableFailureTypes.length === 0) {
+      errors.push(
+        'RETRY_POLICY_RETRYABLE_FAILURE_TYPES must list at least one failure type. ' +
+          'Omit the variable entirely to use the default transient set.',
+      );
+    } else {
+      const unknownTypes = config.retryPolicy.retryableFailureTypes.filter(
+        (type) => !RETRY_FAILURE_TYPES.includes(type),
+      );
+      if (unknownTypes.length > 0) {
+        errors.push(
+          `RETRY_POLICY_RETRYABLE_FAILURE_TYPES contains unknown failure type(s): ` +
+            `${unknownTypes.join(', ')}. Supported values: ${RETRY_FAILURE_TYPES.join(', ')}.`,
+        );
+      }
     }
   }
 

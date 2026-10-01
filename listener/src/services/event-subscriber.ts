@@ -64,19 +64,29 @@ export class EventSubscriber {
       this.expirationService = new NotificationExpirationService(config.expiration);
     }
     
+    // Retry policy (#842): attempt budget and eligible failure types are
+    // shared by both in-memory queues so a permanent failure is not retried
+    // regardless of which path a notification took.
+    const retryPolicy = config.retryPolicy
+      ? {
+          maxAttempts: config.retryPolicy.maxAttempts,
+          retryableFailureTypes: config.retryPolicy.retryableFailureTypes,
+        }
+      : undefined;
+
     if (config.discord) {
       this.discordService = new DiscordNotificationService(config.discord);
       this.retryQueue = new NotificationRetryQueue(
         (event, contractConfig, requestId) =>
           this.discordService!.sendEventNotification(event, contractConfig, requestId),
-        config.retryQueue
+        { ...config.retryQueue, retryPolicy }
       );
     }
     if (config.eventQueue) {
       this.eventQueue = new EventProcessingQueue(
         (event, contractConfig, requestId) =>
           this.processEvent(event, contractConfig, requestId),
-        config.eventQueue
+        { ...config.eventQueue, retryPolicy }
       );
     }
   }
