@@ -16,6 +16,7 @@ import { normalizePaginationParams } from '../utils/pagination';
 import { handleApiError, ApiError } from './error-handler';
 import { applyRequestContext } from '../utils/request-id';
 import { applyRequestIdMiddleware } from '../middleware/request-id';
+import { validateContentType, getMimeType } from '../middleware/content-type';
 import { NotificationHistoryService } from '../services/notification-history';
 import { SearchSuggestionService } from '../services/search-suggestion';
 import { NotificationSearchService } from '../services/notification-search-service';
@@ -508,6 +509,10 @@ export function createEventsServer(options: EventsServerOptions): http.Server {
     // Add X-API-Version response header so callers can inspect active version
     res.setHeader('X-API-Version', 'v1');
 
+    // Standardize response Content-Type for all API responses (#647)
+    if (req.method !== 'OPTIONS') {
+      res.setHeader('Content-Type', 'application/json');
+    }
     /**
      * Enforces X-API-Key auth for protected endpoints. Sends a 401 and returns
      * false when the request is not authenticated.
@@ -539,6 +544,7 @@ export function createEventsServer(options: EventsServerOptions): http.Server {
     }
 
     if (req.method === 'OPTIONS') {
+      res.removeHeader('Content-Type');
       res.writeHead(204);
       res.end();
       return;
@@ -738,6 +744,10 @@ export function createEventsServer(options: EventsServerOptions): http.Server {
 
     // POST /api/webhooks
     if (req.method === 'POST' && url.pathname === '/api/webhooks') {
+      if (!validateContentType(req, res, ['application/json'])) {
+        return;
+      }
+
       const idempotencyKey = IdempotencyKeyService.extractKey(req.headers) ?? undefined;
 
       const writeAuthFailure = (statusCode: number, message: string, code: string): void => {
@@ -862,6 +872,10 @@ export function createEventsServer(options: EventsServerOptions): http.Server {
 
     // POST /api/notifications/validate-batch
     if (req.method === 'POST' && url.pathname === '/api/notifications/validate-batch') {
+      if (!validateContentType(req, res, ['application/json'])) {
+        return;
+      }
+
       let body = '';
       req.on('data', (chunk) => {
         body += chunk.toString();
@@ -917,6 +931,20 @@ export function createEventsServer(options: EventsServerOptions): http.Server {
         return;
       }
 
+      if (!validateContentType(req, res, ['application/json', 'text/csv', 'application/csv'])) {
+        return;
+      }
+
+      const apiKeyHeader = req.headers['x-api-key'];
+      if (options.apiKeys && options.apiKeys.length > 0) {
+        const provided = Array.isArray(apiKeyHeader) ? apiKeyHeader[0] : apiKeyHeader;
+        const allowed = options.apiKeys.some((k) => k.key === provided);
+        if (!allowed) {
+          sendErr(res, 401, 'Unauthorized', ErrorCode.UNAUTHORIZED);
+          return;
+        }
+      }
+
       let body = '';
       req.on('data', (chunk) => {
         body += chunk.toString();
@@ -948,15 +976,31 @@ export function createEventsServer(options: EventsServerOptions): http.Server {
         return;
       }
 
+      if (!validateContentType(req, res, ['application/json'])) {
+        return;
+      }
+
       const idempotencyKey = IdempotencyKeyService.extractKey(req.headers) ?? undefined;
       let body = '';
       req.on('data', (chunk) => {
         body += chunk.toString();
       });
       req.on('end', async () => {
+        let data: any;
         try {
-          const data = JSON.parse(body);
+          data = JSON.parse(body);
+        } catch {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(
+            JSON.stringify({
+              error: 'Request body must be valid JSON.',
+              code: ErrorCode.PARSE_ERROR,
+            }),
+          );
+          return;
+        }
 
+        try {
           if (!data.executeAt || !data.payload || !data.targetRecipient) {
             res.writeHead(400, { 'Content-Type': 'application/json' });
             res.end(
@@ -1563,6 +1607,10 @@ export function createEventsServer(options: EventsServerOptions): http.Server {
         return;
       }
 
+      if (!validateContentType(req, res, ['application/json'])) {
+        return;
+      }
+
       const templateId = decodeURIComponent(getTemplateMatch[1]);
       const actor = resolveRequestActor(req);
       logger.info('Handling PUT /api/templates/:id', {
@@ -1659,6 +1707,10 @@ export function createEventsServer(options: EventsServerOptions): http.Server {
         return;
       }
 
+      if (!validateContentType(req, res, ['application/json'])) {
+        return;
+      }
+
       logger.info('Handling POST /api/templates', { requestId, correlationId });
       let body = '';
       req.on('data', (chunk) => {
@@ -1702,6 +1754,10 @@ export function createEventsServer(options: EventsServerOptions): http.Server {
     if (req.method === 'POST' && templateRenderMatch) {
       if (!options.templateService) {
         sendErr(res, 503, 'Template service not enabled', ErrorCode.SERVICE_UNAVAILABLE);
+        return;
+      }
+
+      if (!validateContentType(req, res, ['application/json'])) {
         return;
       }
 
@@ -1762,6 +1818,10 @@ export function createEventsServer(options: EventsServerOptions): http.Server {
     // PUT /api/preferences/:userId
     const putPrefsMatch = url.pathname.match(/^\/api\/preferences\/([^/]+)$/);
     if (req.method === 'PUT' && putPrefsMatch) {
+      if (!validateContentType(req, res, ['application/json'])) {
+        return;
+      }
+
       const userId = decodeURIComponent(putPrefsMatch[1]);
       logger.info('Handling PUT /api/preferences/:userId', { requestId, correlationId, userId });
       let body = '';
