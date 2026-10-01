@@ -286,6 +286,22 @@ describe('NotificationScheduler', () => {
       expect(notification!.status).toBe(NotificationStatus.CANCELLED);
     });
 
+    test('cancels with a reason and stores it', async () => {
+      const id = await repository.create({
+        payload: { message: 'Test' },
+        notificationType: NotificationType.DISCORD,
+        targetRecipient: 'test-webhook',
+        executeAt: new Date(Date.now() + 60000),
+      });
+      const reason = 'User requested cancellation';
+      const ok = await repository.cancel(id, reason);
+      expect(ok).toBe(true);
+
+      const fetched = await repository.getById(id);
+      expect(fetched!.status).toBe(NotificationStatus.CANCELLED);
+      expect(fetched!.cancellationReason).toBe(reason);
+    });
+
     test('should get statistics', async () => {
       await repository.create({
         payload: { message: 'Test 1' },

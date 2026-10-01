@@ -12,6 +12,7 @@ import { generateRequestId, resolveCorrelationId } from '../utils/request-id';
 import { TemplateService } from '../services/template-service';
 import { handleTemplateRoutes } from './template-routes';
 import { sendOk, sendErr, sendJson, ErrorCode } from '../utils/response';
+import { normalizePaginationParams } from '../utils/pagination';
 import { handleApiError, ApiError } from './error-handler';
 import { applyRequestContext } from '../utils/request-id';
 import { applyRequestIdMiddleware } from '../middleware/request-id';
@@ -24,6 +25,8 @@ import {
   IdempotencyKeyService,
   IdempotencyKeyReuseError,
 } from '../services/idempotency-key-service';
+import { WebhookReplayCache } from '../services/webhook-replay-cache';
+import { IdempotencyKeyService, IdempotencyKeyReuseError } from '../services/idempotency-key-service';
 import { WebhookSecret, RateLimitConfig, ContractConfig } from '../types';
 import { RateLimiter } from './rate-limiter';
 import { getDatabase } from '../database/database';
@@ -54,12 +57,15 @@ import { NotificationHealthMonitor } from '../services/notification-health-monit
 import { getJobMonitor } from '../services/job-monitor';
 import { NotificationImportService } from '../services/notification-import-service';
 import { ResponseTimeMiddleware } from '../middleware/response-time';
+import { addSecurityHeaders } from '../middleware/security-headers';
 import { DEFAULT_MAX_BODY_BYTES, enforceBodyLimit } from '../middleware/body-limit';
 import { sanitizeUrl } from '../utils/logger';
+import { API_KEY_AUTH_MESSAGES, authenticateApiKey } from './api-key-auth';
 
 export interface EventsServerOptions {
   port: number;
   corsOrigin?: string;
+  isProduction?: boolean;
   stellarRpcUrl: string;
   stellarNetworkPassphrase?: string;
   contractAddresses?: ContractConfig[];
@@ -87,6 +93,17 @@ export interface EventsServerOptions {
   metricsStore?: NotificationMetricsStore | null;
   /** Maximum age of signed requests in seconds (default: 300 = 5 minutes). */
   signatureExpirationSeconds?: number;
+  /**
+   * Require `X-Webhook-Timestamp` on inbound webhooks (default: true).
+   * Without it a captured request is signed over the bare body and remains
+   * valid forever. Set to false only for legacy senders that cannot be changed.
+   */
+  requireWebhookTimestamp?: boolean;
+  /**
+   * Maximum number of recently accepted webhook signatures retained by the
+   * replay cache (default: 10000).
+   */
+  webhookReplayCacheMaxEntries?: number;
   /** Optional health monitor — exposes its last report at GET /api/notifications/health. */
   healthMonitor?: NotificationHealthMonitor | null;
   /**
@@ -414,6 +431,13 @@ export function createEventsServer(options: EventsServerOptions): http.Server {
   const suggestionService = new SearchSuggestionService();
   const notificationSearchService = new NotificationSearchService();
   const rateLimiter = options.rateLimit ? new RateLimiter(options.rateLimit) : undefined;
+  // Replay protection (#853): remembers every signature we accepted inside the
+  // freshness window so a captured request cannot be resubmitted. Kept
+  // independent of the optional client-supplied `Idempotency-Key` header,
+  // which an attacker replaying a request would simply omit.
+  const webhookReplayCache = new WebhookReplayCache({
+    maxEntries: options.webhookReplayCacheMaxEntries ?? 10_000,
+  });
   // Response-time tracking (#491)
   const responseTime =
     options.responseTimeMiddleware !== undefined && options.responseTimeMiddleware !== null
@@ -421,6 +445,10 @@ export function createEventsServer(options: EventsServerOptions): http.Server {
       : new ResponseTimeMiddleware({ slowRequestThresholdMs: options.slowRequestThresholdMs });
 
   const server = http.createServer(async (req, res) => {
+    addSecurityHeaders(res, {
+      isProduction: options.isProduction ?? process.env.NODE_ENV === 'production',
+    });
+
     // Request-ID middleware (#686): assigns (or validates+reuses) a requestId
     // and resolves a correlationId for every request, stamping both onto the
     // response headers. See listener/src/middleware/request-id.ts.
@@ -485,6 +513,24 @@ export function createEventsServer(options: EventsServerOptions): http.Server {
     if (req.method !== 'OPTIONS') {
       res.setHeader('Content-Type', 'application/json');
     }
+    /**
+     * Enforces X-API-Key auth for protected endpoints. Sends a 401 and returns
+     * false when the request is not authenticated.
+     */
+    const requireApiKey = (): boolean => {
+      const auth = authenticateApiKey(req, options.apiKeys);
+      if (auth.authenticated) return true;
+      logger.warn('API key authentication failed', {
+        requestId,
+        correlationId,
+        method: req.method,
+        path: url.pathname,
+        reason: auth.reason,
+      });
+      res.setHeader('WWW-Authenticate', 'ApiKey header="X-API-Key"');
+      sendErr(res, 401, API_KEY_AUTH_MESSAGES[auth.reason], ErrorCode.UNAUTHORIZED);
+      return false;
+    };
 
     // The rate-limit metrics endpoint is an observability route and must stay
     // reachable even after a client exhausts its quota — otherwise callers
@@ -559,13 +605,13 @@ export function createEventsServer(options: EventsServerOptions): http.Server {
     // GET /api/events
     if (req.method === 'GET' && url.pathname.startsWith('/api/events')) {
       const limitParam = url.searchParams.get('limit');
-      const limit = limitParam ? parseInt(limitParam, 10) : undefined;
-      const events =
-        limit !== undefined && !Number.isNaN(limit)
-          ? eventRegistry.getEvents(limit)
-          : eventRegistry.getEvents();
+      const parsedLimit = limitParam ? parseInt(limitParam, 10) : undefined;
+      const paginationParams = normalizePaginationParams(
+        parsedLimit !== undefined && !Number.isNaN(parsedLimit) ? parsedLimit : undefined
+      );
+      const events = eventRegistry.getEvents(paginationParams.limit);
 
-      logger.info('Handling GET /api/events', { requestId, correlationId, limit: limit ?? 'all' });
+      logger.info('Handling GET /api/events', { requestId, correlationId, limit: paginationParams.limit });
 
       sendOk(res, 200, { count: eventRegistry.count(), events });
 
@@ -667,6 +713,18 @@ export function createEventsServer(options: EventsServerOptions): http.Server {
       return;
     }
 
+    // GET /api/notifications/health
+    if (req.method === 'GET' && url.pathname === '/api/notifications/health') {
+      const report = options.healthMonitor?.getLastReport() ?? null;
+      if (!report) {
+        sendJson(res, 503, { error: 'Health monitor not configured or no report yet' });
+        return;
+      }
+      const httpStatus = report.status === 'unhealthy' ? 503 : 200;
+      sendJson(res, httpStatus, report);
+      return;
+    }
+
     // GET /api/rate-limit/metrics
     if (req.method === 'GET' && url.pathname === '/api/rate-limit/metrics') {
       if (!rateLimiter) {
@@ -705,6 +763,27 @@ export function createEventsServer(options: EventsServerOptions): http.Server {
 
           const secrets = options.webhookSecrets ?? [];
           const maxAgeSeconds = options.signatureExpirationSeconds ?? 300;
+        const secrets = options.webhookSecrets ?? [];
+        const maxAgeSeconds = options.signatureExpirationSeconds ?? 300;
+        
+        // Use default database for audit log or mock one if not available.
+        // Actually since SecurityAuditService requires Database, let's pass a real one.
+        const db = getDatabase();
+        const { SecurityAuditService } = require('../services/security-audit');
+        const auditService = new SecurityAuditService(db);
+
+        const auth = await verifyWebhookRequest({
+          headers: req.headers as Record<string, string | string[] | undefined>,
+          rawBody,
+          secrets,
+          sourceIp,
+          requestId,
+          correlationId,
+          maxAgeSeconds,
+          requireTimestamp: options.requireWebhookTimestamp !== false,
+          replayCache: webhookReplayCache,
+          auditService,
+        });
 
           const auth = verifyWebhookRequest({
             headers: req.headers as Record<string, string | string[] | undefined>,
@@ -844,6 +923,9 @@ export function createEventsServer(options: EventsServerOptions): http.Server {
 
     // POST /api/notifications/import — bulk import from JSON or CSV
     if (req.method === 'POST' && url.pathname === '/api/notifications/import') {
+      // Authenticate before revealing anything about service availability.
+      if (!requireApiKey()) return;
+
       if (!options.notificationAPI) {
         sendErr(res, 503, 'Scheduler not enabled', ErrorCode.SERVICE_UNAVAILABLE);
         return;
@@ -1154,6 +1236,39 @@ export function createEventsServer(options: EventsServerOptions): http.Server {
       return;
     }
 
+    // GET /api/schedule/queue/metrics — operational metrics for notification queue activity (#797)
+    if (
+      req.method === 'GET' &&
+      (url.pathname === '/api/schedule/queue/metrics' ||
+        url.pathname === '/api/schedule/queue-metrics' ||
+        url.pathname === '/api/notifications/queue-metrics')
+    ) {
+      if (!options.notificationAPI) {
+        sendErr(res, 503, 'Scheduler not enabled', ErrorCode.SERVICE_UNAVAILABLE);
+        return;
+      }
+
+      options.notificationAPI
+        .getQueueOperationalMetrics()
+        .then((metrics) => {
+          logger.info('Handling GET /api/schedule/queue/metrics', {
+            requestId,
+            correlationId,
+            durationMs: Date.now() - startTime,
+          });
+          sendOk(res, 200, metrics);
+        })
+        .catch((error) => {
+          logger.error('Failed to get queue operational metrics', {
+            error,
+            requestId,
+            correlationId,
+          });
+          handleApiError(res, error, requestId, correlationId);
+        });
+      return;
+    }
+
     // GET /api/schedule/:id
     if (req.method === 'GET' && url.pathname.startsWith('/api/schedule/')) {
       if (!options.notificationAPI) {
@@ -1183,6 +1298,49 @@ export function createEventsServer(options: EventsServerOptions): http.Server {
       return;
     }
 
+    // POST /api/notifications/:id/cancel
+    const cancelMatch = url.pathname.match(/^\/api\/notifications\/([^/]+)\/cancel$/);
+    if (req.method === 'POST' && cancelMatch) {
+      if (!options.notificationAPI) {
+        sendErr(res, 503, 'Scheduler not enabled', ErrorCode.SERVICE_UNAVAILABLE);
+        return;
+      }
+
+      const id = parseInt(cancelMatch[1], 10);
+      if (isNaN(id)) {
+        sendErr(res, 400, 'Invalid notification ID', ErrorCode.BAD_REQUEST);
+        return;
+      }
+
+      let body = '';
+      req.on('data', (chunk) => { body += chunk; });
+      req.on('end', () => {
+        void (async () => {
+          try {
+            const parsed = body ? JSON.parse(body) as { reason?: string } : {};
+            const ok = await options.notificationAPI!.cancelNotification(id, parsed.reason, requestId);
+            
+            if (!ok) {
+              sendErr(res, 400, 'Unable to cancel notification', ErrorCode.BAD_REQUEST);
+              return;
+            }
+            
+            const notification = await options.notificationAPI!.getNotification(id);
+            sendOk(res, 200, notification);
+          } catch (error) {
+            if (error instanceof SyntaxError) {
+              sendErr(res, 400, 'Invalid JSON', ErrorCode.PARSE_ERROR);
+              return;
+            }
+            logger.error('Failed to cancel notification', { error, requestId, correlationId, id });
+            sendErr(res, 500, (error as Error).message, ErrorCode.INTERNAL_ERROR);
+          }
+        })();
+      });
+      return;
+    }
+
+    function isValidApiKey(apiKey: string | undefined, allowedKeys: Array<{ key: string; name?: string }> | undefined): boolean {
     function isValidApiKey(
       apiKey: string | undefined,
       allowedKeys: Array<{ key: string; name?: string }> | undefined,
@@ -1212,6 +1370,13 @@ export function createEventsServer(options: EventsServerOptions): http.Server {
       const offset = url.searchParams.get('offset')
         ? parseInt(url.searchParams.get('offset')!, 10)
         : undefined;
+    // Get notification delivery history endpoint.
+    // Matched on the rewritten pathname so /api/v1/notifications/history is
+    // routed (and authenticated) the same as the unversioned path.
+    if (req.method === 'GET' && url.pathname === '/api/notifications/history') {
+      if (!requireApiKey()) return;
+      const limit = url.searchParams.get('limit') ? parseInt(url.searchParams.get('limit')!, 10) : undefined;
+      const offset = url.searchParams.get('offset') ? parseInt(url.searchParams.get('offset')!, 10) : undefined;
       const cursor = url.searchParams.get('cursor') || undefined;
       const status = url.searchParams.get('status') as 'SUCCESS' | 'FAILED' | 'RETRY' | null;
       const startDate = url.searchParams.get('startDate');

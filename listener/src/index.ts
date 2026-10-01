@@ -9,7 +9,7 @@ import { NotificationTemplateService } from './services/notification-template-se
 import { TemplateAuditTrail } from './services/template-audit-trail';
 import { getTemplateCache } from './services/notification-template-cache';
 import { NotificationAPI } from './services/notification-api';
-import { CleanupService } from './services/cleanup-service';
+import { DatabaseCleanupJob } from './services/database-cleanup-job';
 import { ArchiveService } from './services/archive-service';
 import { ArchiveStore } from './services/archive-store';
 import { loadArchiveConfig } from './services/archive-config';
@@ -49,7 +49,7 @@ async function main() {
 
   let templateService: NotificationTemplateService | null = null;
   let legacyTemplateService: TemplateService | null = null;
-  let cleanupService: CleanupService | null = null;
+  let databaseCleanupJob: DatabaseCleanupJob | null = null;
   let repository: ScheduledNotificationRepository | null = null;
   let reconciliationEngine: IndexingReconciliationEngine | null = null;
   let archiveService: ArchiveService | null = null;
@@ -67,7 +67,7 @@ async function main() {
     const db = await initializeDatabase(config.databasePath);
 
     repository = new ScheduledNotificationRepository(db);
-    
+
     healthMonitor = new NotificationHealthMonitor(null, getWorkerManager(), {
       repository,
       getLastSuccessfulPoll: () => subscriber?.getLastSuccessfulPoll() ?? null,
@@ -79,8 +79,10 @@ async function main() {
       eventRegistry.setTtlMs(config.cleanup.eventRetentionMs);
     }
 
-    cleanupService = new CleanupService(db, eventRegistry, config.cleanup);
-    cleanupService.start();
+    if (config.cleanup) {
+      databaseCleanupJob = new DatabaseCleanupJob(db, config.cleanup, eventRegistry);
+      databaseCleanupJob.start();
+    }
 
     reconciliationEngine = new IndexingReconciliationEngine({
       db,
@@ -165,8 +167,7 @@ async function main() {
     healthMonitor.start();
   }
 
-  subscriber = new EventSubscriber(config, deduplicationService);
-  const subscriber = new EventSubscriber(config, deduplicationService ?? undefined);
+  subscriber = new EventSubscriber(config, deduplicationService ?? undefined);
   await subscriber.start();
 
   let isShuttingDown = false;
@@ -186,8 +187,8 @@ async function main() {
         healthMonitor.stop();
       }
 
-      if (cleanupService) {
-        await cleanupService.stop();
+      if (databaseCleanupJob) {
+        await databaseCleanupJob.stop();
       }
 
       if (reconciliationEngine) {
@@ -210,11 +211,11 @@ async function main() {
         await retryScheduler.stop();
       }
 
-    if (subscriber) {
-      await subscriber.stop();
-    }
+      if (subscriber) {
+        await subscriber.stop();
+      }
 
-    eventsServer.close();
+      eventsServer.close();
 
       logger.info('Graceful shutdown completed successfully', { signal });
       process.exit(0);
