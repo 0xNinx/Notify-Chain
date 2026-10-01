@@ -15,6 +15,13 @@ import type { ServerResponse } from 'http';
 export function addSecurityHeaders(
   res: ServerResponse,
   options: { isProduction?: boolean } = {},
+
+const isLocalhost = (hostname: string): boolean =>
+  hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1';
+
+export function addSecurityHeaders(
+  res: ServerResponse,
+  options: { productionOrigin?: string } = {},
 ): void {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('X-Frame-Options', 'SAMEORIGIN');
