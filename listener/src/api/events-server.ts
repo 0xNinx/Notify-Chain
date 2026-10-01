@@ -12,11 +12,10 @@ import { generateRequestId, resolveCorrelationId } from '../utils/request-id';
 import { TemplateService } from '../services/template-service';
 import { handleTemplateRoutes } from './template-routes';
 import { sendOk, sendErr, sendJson, ErrorCode } from '../utils/response';
+import { normalizePaginationParams } from '../utils/pagination';
 import { handleApiError, ApiError } from './error-handler';
 import { applyRequestContext } from '../utils/request-id';
 import { applyRequestIdMiddleware } from '../middleware/request-id';
-import { TemplateService } from '../services/template-service';
-import { handleTemplateRoutes } from './template-routes';
 import { NotificationHistoryService } from '../services/notification-history';
 import { SearchSuggestionService } from '../services/search-suggestion';
 import { NotificationSearchService } from '../services/notification-search-service';
@@ -544,13 +543,13 @@ export function createEventsServer(options: EventsServerOptions): http.Server {
     // GET /api/events
     if (req.method === 'GET' && url.pathname.startsWith('/api/events')) {
       const limitParam = url.searchParams.get('limit');
-      const limit = limitParam ? parseInt(limitParam, 10) : undefined;
-      const events =
-        limit !== undefined && !Number.isNaN(limit)
-          ? eventRegistry.getEvents(limit)
-          : eventRegistry.getEvents();
+      const parsedLimit = limitParam ? parseInt(limitParam, 10) : undefined;
+      const paginationParams = normalizePaginationParams(
+        parsedLimit !== undefined && !Number.isNaN(parsedLimit) ? parsedLimit : undefined
+      );
+      const events = eventRegistry.getEvents(paginationParams.limit);
 
-      logger.info('Handling GET /api/events', { requestId, correlationId, limit: limit ?? 'all' });
+      logger.info('Handling GET /api/events', { requestId, correlationId, limit: paginationParams.limit });
 
       sendOk(res, 200, { count: eventRegistry.count(), events });
 
@@ -680,8 +679,14 @@ export function createEventsServer(options: EventsServerOptions): http.Server {
 
         const secrets = options.webhookSecrets ?? [];
         const maxAgeSeconds = options.signatureExpirationSeconds ?? 300;
+        
+        // Use default database for audit log or mock one if not available.
+        // Actually since SecurityAuditService requires Database, let's pass a real one.
+        const db = getDatabase();
+        const { SecurityAuditService } = require('../services/security-audit');
+        const auditService = new SecurityAuditService(db);
 
-        const auth = verifyWebhookRequest({
+        const auth = await verifyWebhookRequest({
           headers: req.headers as Record<string, string | string[] | undefined>,
           rawBody,
           secrets,
@@ -689,6 +694,7 @@ export function createEventsServer(options: EventsServerOptions): http.Server {
           requestId,
           correlationId,
           maxAgeSeconds,
+          auditService,
         });
 
         if (!auth.authenticated) {
