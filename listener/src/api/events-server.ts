@@ -56,6 +56,7 @@ import { NotificationImportService } from '../services/notification-import-servi
 import { ResponseTimeMiddleware } from '../middleware/response-time';
 import { DEFAULT_MAX_BODY_BYTES, enforceBodyLimit } from '../middleware/body-limit';
 import { sanitizeUrl } from '../utils/logger';
+import { API_KEY_AUTH_MESSAGES, authenticateApiKey } from './api-key-auth';
 
 export interface EventsServerOptions {
   port: number;
@@ -502,6 +503,25 @@ export function createEventsServer(options: EventsServerOptions): http.Server {
     // Add X-API-Version response header so callers can inspect active version
     res.setHeader('X-API-Version', 'v1');
 
+    /**
+     * Enforces X-API-Key auth for protected endpoints. Sends a 401 and returns
+     * false when the request is not authenticated.
+     */
+    const requireApiKey = (): boolean => {
+      const auth = authenticateApiKey(req, options.apiKeys);
+      if (auth.authenticated) return true;
+      logger.warn('API key authentication failed', {
+        requestId,
+        correlationId,
+        method: req.method,
+        path: url.pathname,
+        reason: auth.reason,
+      });
+      res.setHeader('WWW-Authenticate', 'ApiKey header="X-API-Key"');
+      sendErr(res, 401, API_KEY_AUTH_MESSAGES[auth.reason], ErrorCode.UNAUTHORIZED);
+      return false;
+    };
+
     // The rate-limit metrics endpoint is an observability route and must stay
     // reachable even after a client exhausts its quota — otherwise callers
     // can't read the very metrics that explain why they are being throttled.
@@ -815,19 +835,12 @@ export function createEventsServer(options: EventsServerOptions): http.Server {
 
     // POST /api/notifications/import — bulk import from JSON or CSV
     if (req.method === 'POST' && url.pathname === '/api/notifications/import') {
+      // Authenticate before revealing anything about service availability.
+      if (!requireApiKey()) return;
+
       if (!options.notificationAPI) {
         sendErr(res, 503, 'Scheduler not enabled', ErrorCode.SERVICE_UNAVAILABLE);
         return;
-      }
-
-      const apiKeyHeader = req.headers['x-api-key'];
-      if (options.apiKeys && options.apiKeys.length > 0) {
-        const provided = Array.isArray(apiKeyHeader) ? apiKeyHeader[0] : apiKeyHeader;
-        const allowed = options.apiKeys.some((k) => k.key === provided);
-        if (!allowed) {
-          sendErr(res, 401, 'Unauthorized', ErrorCode.UNAUTHORIZED);
-          return;
-        }
       }
 
       let body = '';
@@ -1098,26 +1111,11 @@ export function createEventsServer(options: EventsServerOptions): http.Server {
       return;
     }
 
-    function isValidApiKey(apiKey: string | undefined, allowedKeys: Array<{ key: string; name?: string }> | undefined): boolean {
-      if (!allowedKeys || allowedKeys.length === 0) {
-        // If no API keys are configured, allow unauthenticated access is allowed (for backward compatibility)
-        return true;
-      }
-      if (!apiKey) {
-        return false;
-      }
-      return allowedKeys.some(k => k.key === apiKey);
-    }
-
-    // Get notification delivery history endpoint
-    if (req.method === 'GET' && req.url?.startsWith('/api/notifications/history')) {
-      const apiKey = req.headers['x-api-key'] as string | undefined;
-      if (!isValidApiKey(apiKey, options.apiKeys)) {
-        sendErr(res, 401, 'Unauthorized: Invalid or missing API key', ErrorCode.UNAUTHORIZED);
-        return;
-      }
-
-      const url = new URL(req.url, 'http://localhost');
+    // Get notification delivery history endpoint.
+    // Matched on the rewritten pathname so /api/v1/notifications/history is
+    // routed (and authenticated) the same as the unversioned path.
+    if (req.method === 'GET' && url.pathname === '/api/notifications/history') {
+      if (!requireApiKey()) return;
       const limit = url.searchParams.get('limit') ? parseInt(url.searchParams.get('limit')!, 10) : undefined;
       const offset = url.searchParams.get('offset') ? parseInt(url.searchParams.get('offset')!, 10) : undefined;
       const cursor = url.searchParams.get('cursor') || undefined;

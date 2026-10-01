@@ -470,6 +470,9 @@ export class DiscordNotificationService implements NotificationProvider {
           return String(value.i64());
         case StellarSDK.xdr.ScValType.scvString(): {
           const strVal = value.str().toString();
+          // Leave headroom for markdown escapes added by sanitizeForDiscord.
+          const limit = Math.floor(MAX_DISCORD_FIELD_VALUE_LENGTH / 2);
+          const truncated = strVal.length > limit ? strVal.slice(0, limit) + '...' : strVal;
           const truncated =
             strVal.length > MAX_DISCORD_FIELD_VALUE_LENGTH
               ? `${strVal.slice(0, MAX_DISCORD_FIELD_VALUE_LENGTH)}...`
