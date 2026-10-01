@@ -60,7 +60,9 @@ export function sanitizeForDiscord(text: string): string {
   return text
     .replace(MENTION_PATTERN, '[mention removed]')
     .replace(MARKDOWN_CHARS, '\\$1');
-// Internal helpers
+}
+
+// ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
 /**

@@ -517,5 +517,127 @@ describe('Config validation', () => {
         'RETRY_MAX_DELAY_MS must be >= RETRY_BASE_DELAY_MS'
       );
     });
+
+    describe('Fallback RPC Configuration', () => {
+      it('loads fallback RPC URLs from comma-separated STELLAR_RPC_FALLBACK_URLS', () => {
+        process.env.STELLAR_RPC_URL = 'https://rpc1.stellar.org';
+        process.env.STELLAR_RPC_FALLBACK_URLS = 'https://rpc2.stellar.org, https://rpc3.stellar.org';
+
+        const config = loadConfig();
+        expect(config.stellarRpcUrl).toBe('https://rpc1.stellar.org');
+        expect(config.stellarRpcFallbackUrls).toEqual([
+          'https://rpc2.stellar.org',
+          'https://rpc3.stellar.org',
+        ]);
+        expect(config.stellarRpcUrls).toEqual([
+          'https://rpc1.stellar.org',
+          'https://rpc2.stellar.org',
+          'https://rpc3.stellar.org',
+        ]);
+        expect(() => validateConfig(config)).not.toThrow();
+      });
+
+      it('loads fallback RPC URLs from JSON array STELLAR_RPC_FALLBACK_URLS', () => {
+        process.env.STELLAR_RPC_URL = 'https://rpc1.stellar.org';
+        process.env.STELLAR_RPC_FALLBACK_URLS = JSON.stringify([
+          'https://rpc2.stellar.org',
+          'https://rpc3.stellar.org',
+        ]);
+
+        const config = loadConfig();
+        expect(config.stellarRpcFallbackUrls).toEqual([
+          'https://rpc2.stellar.org',
+          'https://rpc3.stellar.org',
+        ]);
+        expect(() => validateConfig(config)).not.toThrow();
+      });
+
+      it('loads primary and fallbacks from STELLAR_RPC_URLS list', () => {
+        delete process.env.STELLAR_RPC_URL;
+        process.env.STELLAR_RPC_URLS = 'https://primary.stellar.org, https://fallback.stellar.org';
+
+        const config = loadConfig();
+        expect(config.stellarRpcUrl).toBe('https://primary.stellar.org');
+        expect(config.stellarRpcFallbackUrls).toEqual(['https://fallback.stellar.org']);
+        expect(config.stellarRpcUrls).toEqual([
+          'https://primary.stellar.org',
+          'https://fallback.stellar.org',
+        ]);
+      });
+
+      it('deduplicates primary URL if present in fallback URLs', () => {
+        process.env.STELLAR_RPC_URL = 'https://rpc1.stellar.org';
+        process.env.STELLAR_RPC_FALLBACK_URLS = 'https://rpc1.stellar.org, https://rpc2.stellar.org';
+
+        const config = loadConfig();
+        expect(config.stellarRpcFallbackUrls).toEqual(['https://rpc2.stellar.org']);
+      });
+
+      it('loads custom RPC failover threshold, cooldown, and request timeout', () => {
+        process.env.RPC_FAILURE_THRESHOLD = '5';
+        process.env.RPC_COOLDOWN_MS = '120000';
+        process.env.RPC_REQUEST_TIMEOUT_MS = '8000';
+        process.env.RPC_MAX_RETRIES = '4';
+
+        const config = loadConfig();
+        expect(config.rpcFallback?.failureThreshold).toBe(5);
+        expect(config.rpcFallback?.cooldownMs).toBe(120000);
+        expect(config.rpcFallback?.requestTimeoutMs).toBe(8000);
+        expect(config.rpcFallback?.maxRetries).toBe(4);
+      });
+
+      it('detects invalid fallback RPC URL format', () => {
+        process.env.STELLAR_RPC_FALLBACK_URLS = 'invalid-not-a-url';
+
+        const config = loadConfig();
+        expect(() => validateConfig(config)).toThrow(ConfigError);
+        expect(() => validateConfig(config)).toThrow(
+          'Fallback RPC URL at index 0 is not a valid URL'
+        );
+      });
+
+      it('detects fallback RPC URL with invalid protocol', () => {
+        process.env.STELLAR_RPC_FALLBACK_URLS = 'ftp://ftp.stellar.org';
+
+        const config = loadConfig();
+        expect(() => validateConfig(config)).toThrow(ConfigError);
+        expect(() => validateConfig(config)).toThrow(
+          'Fallback RPC URL at index 0 must use HTTP or HTTPS protocol'
+        );
+      });
+
+      it('detects invalid RPC_FAILURE_THRESHOLD (less than 1)', () => {
+        process.env.RPC_FAILURE_THRESHOLD = '0';
+
+        const config = loadConfig();
+        expect(() => validateConfig(config)).toThrow(ConfigError);
+        expect(() => validateConfig(config)).toThrow(
+          'RPC_FAILURE_THRESHOLD must be >= 1'
+        );
+      });
+
+      it('detects invalid RPC_COOLDOWN_MS (less than 0)', () => {
+        process.env.RPC_COOLDOWN_MS = '-10';
+
+        const config = loadConfig();
+        expect(() => validateConfig(config)).toThrow(ConfigError);
+        expect(() => validateConfig(config)).toThrow(
+          'RPC_COOLDOWN_MS must be >= 0'
+        );
+      });
+
+      it('detects invalid RPC_REQUEST_TIMEOUT_MS (less than 500)', () => {
+        process.env.RPC_REQUEST_TIMEOUT_MS = '200';
+
+        const config = loadConfig();
+        expect(() => validateConfig(config)).toThrow(ConfigError);
+        expect(() => validateConfig(config)).toThrow(
+          'RPC_REQUEST_TIMEOUT_MS must be at least 500 ms'
+        );
+      });
+    });
   });
 });
+});
+
+
