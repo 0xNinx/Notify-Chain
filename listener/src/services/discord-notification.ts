@@ -404,9 +404,10 @@ export class DiscordNotificationService implements NotificationProvider {
   sanitizeEmbed(embed: DiscordEmbed): DiscordEmbed {
     let title = embed.title ?? '';
     if (title.length > MAX_DISCORD_EMBED_TITLE_LENGTH) {
+      const originalLength = embed.title?.length ?? title.length;
       title = title.slice(0, MAX_DISCORD_EMBED_TITLE_LENGTH - 3) + '...';
       logger.warn('Discord embed title truncated', {
-        originalLength: embed.title.length,
+        originalLength,
         maxLength: MAX_DISCORD_EMBED_TITLE_LENGTH,
       });
     }
@@ -428,7 +429,7 @@ export class DiscordNotificationService implements NotificationProvider {
     if (footer?.text && footer.text.length > MAX_DISCORD_FOOTER_TEXT_LENGTH) {
       footer = { text: footer.text.slice(0, MAX_DISCORD_FOOTER_TEXT_LENGTH - 3) + '...' };
       logger.warn('Discord footer text truncated', {
-        originalLength: embed.footer.text.length,
+        originalLength: footer.text.length,
         maxLength: MAX_DISCORD_FOOTER_TEXT_LENGTH,
       });
     }
@@ -486,6 +487,9 @@ export class DiscordNotificationService implements NotificationProvider {
           return String(value.i64());
         case StellarSDK.xdr.ScValType.scvString(): {
           const strVal = value.str().toString();
+          const truncated =
+            strVal.length > MAX_DISCORD_FIELD_VALUE_LENGTH
+              ? strVal.slice(0, MAX_DISCORD_FIELD_VALUE_LENGTH) + '...'
           return strVal.length > MAX_DISCORD_FIELD_VALUE_LENGTH
             ? strVal.slice(0, MAX_DISCORD_FIELD_VALUE_LENGTH) + '...'
             : strVal;
