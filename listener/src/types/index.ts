@@ -1,3 +1,15 @@
+import * as StellarSDK from '@stellar/stellar-sdk';
+
+export interface NotificationProvider {
+  sendEventNotification(
+    event: StellarSDK.rpc.Api.EventResponse,
+    contractConfig: ContractConfig,
+    requestId?: string
+  ): Promise<boolean>;
+
+  sendTestMessage(requestId?: string): Promise<boolean>;
+}
+
 export interface ContractConfig {
   address: string;
   events: string[];

@@ -680,8 +680,14 @@ export function createEventsServer(options: EventsServerOptions): http.Server {
 
         const secrets = options.webhookSecrets ?? [];
         const maxAgeSeconds = options.signatureExpirationSeconds ?? 300;
+        
+        // Use default database for audit log or mock one if not available.
+        // Actually since SecurityAuditService requires Database, let's pass a real one.
+        const db = getDatabase();
+        const { SecurityAuditService } = require('../services/security-audit');
+        const auditService = new SecurityAuditService(db);
 
-        const auth = verifyWebhookRequest({
+        const auth = await verifyWebhookRequest({
           headers: req.headers as Record<string, string | string[] | undefined>,
           rawBody,
           secrets,
@@ -689,6 +695,7 @@ export function createEventsServer(options: EventsServerOptions): http.Server {
           requestId,
           correlationId,
           maxAgeSeconds,
+          auditService,
         });
 
         if (!auth.authenticated) {
