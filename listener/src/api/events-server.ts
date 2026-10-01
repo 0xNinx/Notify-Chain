@@ -1254,6 +1254,49 @@ export function createEventsServer(options: EventsServerOptions): http.Server {
       return;
     }
 
+    // POST /api/notifications/:id/cancel
+    const cancelMatch = url.pathname.match(/^\/api\/notifications\/([^/]+)\/cancel$/);
+    if (req.method === 'POST' && cancelMatch) {
+      if (!options.notificationAPI) {
+        sendErr(res, 503, 'Scheduler not enabled', ErrorCode.SERVICE_UNAVAILABLE);
+        return;
+      }
+
+      const id = parseInt(cancelMatch[1], 10);
+      if (isNaN(id)) {
+        sendErr(res, 400, 'Invalid notification ID', ErrorCode.BAD_REQUEST);
+        return;
+      }
+
+      let body = '';
+      req.on('data', (chunk) => { body += chunk; });
+      req.on('end', () => {
+        void (async () => {
+          try {
+            const parsed = body ? JSON.parse(body) as { reason?: string } : {};
+            const ok = await options.notificationAPI!.cancelNotification(id, parsed.reason, requestId);
+            
+            if (!ok) {
+              sendErr(res, 400, 'Unable to cancel notification', ErrorCode.BAD_REQUEST);
+              return;
+            }
+            
+            const notification = await options.notificationAPI!.getNotification(id);
+            sendOk(res, 200, notification);
+          } catch (error) {
+            if (error instanceof SyntaxError) {
+              sendErr(res, 400, 'Invalid JSON', ErrorCode.PARSE_ERROR);
+              return;
+            }
+            logger.error('Failed to cancel notification', { error, requestId, correlationId, id });
+            sendErr(res, 500, (error as Error).message, ErrorCode.INTERNAL_ERROR);
+          }
+        })();
+      });
+      return;
+    }
+
+    function isValidApiKey(apiKey: string | undefined, allowedKeys: Array<{ key: string; name?: string }> | undefined): boolean {
     function isValidApiKey(
       apiKey: string | undefined,
       allowedKeys: Array<{ key: string; name?: string }> | undefined,
