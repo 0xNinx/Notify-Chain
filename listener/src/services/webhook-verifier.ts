@@ -235,6 +235,7 @@ export interface WebhookVerificationContext {
    * the hole left by the optional client-supplied `Idempotency-Key`.
    */
   replayCache?: WebhookReplayCache;
+  auditService?: import('./security-audit').SecurityAuditService;
 }
 
 export interface WebhookVerificationOutcome {
@@ -306,6 +307,8 @@ export function verifyWebhookRequest(ctx: WebhookVerificationContext): WebhookVe
     requireTimestamp = true,
     replayCache,
   } = ctx;
+export async function verifyWebhookRequest(ctx: WebhookVerificationContext): Promise<WebhookVerificationOutcome> {
+  const { headers, rawBody, secrets, sourceIp, requestId, correlationId, maxAgeSeconds, auditService } = ctx;
 
   const signatureHeader = extractSignature(headers);
   const keyId = extractKeyId(headers);
@@ -322,6 +325,17 @@ export function verifyWebhookRequest(ctx: WebhookVerificationContext): WebhookVe
   if (!signatureHeader) {
     logger.warn('Webhook authentication rejected: missing signature header', auditContext);
     const e = AUTH_ERRORS.missing_signature_header;
+    if (auditService) {
+      await auditService.record({
+        action: 'auth_failure',
+        actor: 'unknown',
+        sourceIp,
+        requestId,
+        correlationId,
+        outcome: e.code,
+        details: { reason: e.message },
+      });
+    }
     return {
       authenticated: false,
       statusCode: e.status,
@@ -334,6 +348,17 @@ export function verifyWebhookRequest(ctx: WebhookVerificationContext): WebhookVe
   if (!keyId) {
     logger.warn('Webhook authentication rejected: missing key-id header', auditContext);
     const e = AUTH_ERRORS.missing_key_id;
+    if (auditService) {
+      await auditService.record({
+        action: 'auth_failure',
+        actor: 'unknown',
+        sourceIp,
+        requestId,
+        correlationId,
+        outcome: e.code,
+        details: { reason: e.message },
+      });
+    }
     return {
       authenticated: false,
       statusCode: e.status,
@@ -347,6 +372,17 @@ export function verifyWebhookRequest(ctx: WebhookVerificationContext): WebhookVe
   if (!secret) {
     logger.warn('Webhook authentication rejected: unknown key-id', { ...auditContext, keyId });
     const e = AUTH_ERRORS.unknown_key_id;
+    if (auditService) {
+      await auditService.record({
+        action: 'auth_failure',
+        actor: keyId,
+        sourceIp,
+        requestId,
+        correlationId,
+        outcome: e.code,
+        details: { reason: e.message },
+      });
+    }
     return {
       authenticated: false,
       statusCode: e.status,
@@ -370,6 +406,17 @@ export function verifyWebhookRequest(ctx: WebhookVerificationContext): WebhookVe
 
   if (!verification.valid) {
     const err = AUTH_ERRORS[verification.reason ?? 'hmac_mismatch'] ?? AUTH_ERRORS.hmac_mismatch;
+    if (auditService) {
+      await auditService.record({
+        action: 'auth_failure',
+        actor: keyId,
+        sourceIp,
+        requestId,
+        correlationId,
+        outcome: err.code,
+        details: { reason: err.message },
+      });
+    }
     return {
       authenticated: false,
       statusCode: err.status,

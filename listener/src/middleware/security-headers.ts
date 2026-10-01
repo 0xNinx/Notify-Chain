@@ -10,13 +10,13 @@
  * See: https://owasp.org/www-project-secure-headers/
  */
 
-import type { http.ServerResponse } from 'http';
+import type { ServerResponse } from 'http';
 
 const isLocalhost = (hostname: string): boolean =>
   hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1';
 
 export function addSecurityHeaders(
-  res: http.ServerResponse,
+  res: ServerResponse,
   options: { productionOrigin?: string } = {},
 ): void {
   const origin = res.getHeader('Access-Control-Allow-Origin') as string | undefined;
