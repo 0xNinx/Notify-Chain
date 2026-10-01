@@ -1,3 +1,6 @@
+import { Config, ContractConfig, DiscordConfig, WebhookSecret, AppCleanupConfig, EventQueueConfig, RetrySchedulerOptions, AnalyticsConfig, ExpirationConfig, ApiKey, BackfillConfig, LoggingConfig, ApiConfig } from './types';
+import { validateCorsOrigin, CorsValidationError } from './utils/cors-validator';
+import { ConfigurationSchemaValidator, APP_CONFIG_SCHEMA } from './config-schema';
 import { validateCorsOrigin, CorsValidationError } from './utils/cors-validator';
 import { ConfigurationSchemaValidator, APP_CONFIG_SCHEMA } from './config-schema';
 import { Config, ContractConfig, DiscordConfig, WebhookSecret, AppCleanupConfig, EventQueueConfig, RetrySchedulerOptions, AnalyticsConfig, ExpirationConfig, ApiKey, BackfillConfig, LoggingConfig, ApiConfig, RpcFallbackConfig } from './types';
@@ -76,6 +79,13 @@ function parseStringListEnv(name: string): string[] {
 function validateContractAddresses(value: unknown): ContractConfig[] {
   if (!Array.isArray(value)) {
     throw new ConfigError('CONTRACT_ADDRESSES must be a JSON array of contract objects.');
+  }
+
+  if (value.length === 0) {
+    throw new ConfigError(
+      'CONTRACT_ADDRESSES is empty. The listener requires at least one contract to monitor. ' +
+        'Add contract configurations or the service will not process any events.'
+    );
   }
 
   return value.map((item, index) => {
