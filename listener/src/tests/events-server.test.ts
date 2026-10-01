@@ -5,11 +5,13 @@ const TEST_PORT = 19876;
 
 function makeRequest(
   path: string,
+  options: { headers?: Record<string, string>; method?: string; port?: number } = {}
+): Promise<{ status: number; headers: http.IncomingHttpHeaders }> {
   options: { headers?: Record<string, string>; method?: string } = {}
 ): Promise<{ status: number; headers: http.IncomingHttpHeaders; body: any }> {
   return new Promise((resolve, reject) => {
     const req = http.request(
-      { hostname: '127.0.0.1', port: TEST_PORT, path, method: options.method ?? 'GET', headers: options.headers },
+      { hostname: '127.0.0.1', port: options.port ?? TEST_PORT, path, method: options.method ?? 'GET', headers: options.headers },
       (res) => {
         let data = '';
         res.on('data', (chunk) => data += chunk);
@@ -71,6 +73,7 @@ describe('correlation ID propagation', () => {
   });
 });
 
+describe('security headers', () => {
 describe('GET /api/events pagination', () => {
   let server: http.Server;
 
@@ -104,6 +107,45 @@ describe('GET /api/events pagination', () => {
     server.close(done);
   });
 
+  test('sets baseline headers on preflight responses without changing cache policy', async () => {
+    const { status, headers } = await makeRequest('/api/events', { method: 'OPTIONS' });
+
+    expect(status).toBe(204);
+    expect(headers['x-content-type-options']).toBe('nosniff');
+    expect(headers['x-frame-options']).toBe('SAMEORIGIN');
+    expect(headers['referrer-policy']).toBe('strict-origin-when-cross-origin');
+    expect(headers['strict-transport-security']).toBeUndefined();
+    expect(headers['cache-control']).toBeUndefined();
+  });
+
+  test('sets baseline headers on not-found responses', async () => {
+    const { status, headers } = await makeRequest('/no-such-route');
+
+    expect(status).toBe(404);
+    expect(headers['x-content-type-options']).toBe('nosniff');
+    expect(headers['x-frame-options']).toBe('SAMEORIGIN');
+    expect(headers['referrer-policy']).toBe('strict-origin-when-cross-origin');
+  });
+
+  test('sets HSTS only when production is explicitly enabled', async () => {
+    const productionServer = createEventsServer({
+      port: 0,
+      isProduction: true,
+      stellarRpcUrl: 'http://localhost:8000',
+      stellarNetworkPassphrase: 'Test SDF Network ; September 2015',
+      contractAddresses: [],
+    });
+
+    await new Promise<void>((resolve) => productionServer.listen(0, '127.0.0.1', resolve));
+
+    try {
+      const address = productionServer.address() as { port: number };
+      const { headers } = await makeRequest('/no-such-route', { port: address.port });
+
+      expect(headers['strict-transport-security']).toBe('max-age=31536000');
+    } finally {
+      await new Promise<void>((resolve) => productionServer.close(() => resolve()));
+    }
   test('defaults to 20 items when limit is not provided', async () => {
     const { status, body } = await makeRequest('/api/events');
     expect(status).toBe(200);

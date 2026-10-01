@@ -54,6 +54,7 @@ import { NotificationHealthMonitor } from '../services/notification-health-monit
 import { getJobMonitor } from '../services/job-monitor';
 import { NotificationImportService } from '../services/notification-import-service';
 import { ResponseTimeMiddleware } from '../middleware/response-time';
+import { addSecurityHeaders } from '../middleware/security-headers';
 import { DEFAULT_MAX_BODY_BYTES, enforceBodyLimit } from '../middleware/body-limit';
 import { sanitizeUrl } from '../utils/logger';
 import { API_KEY_AUTH_MESSAGES, authenticateApiKey } from './api-key-auth';
@@ -61,6 +62,7 @@ import { API_KEY_AUTH_MESSAGES, authenticateApiKey } from './api-key-auth';
 export interface EventsServerOptions {
   port: number;
   corsOrigin?: string;
+  isProduction?: boolean;
   stellarRpcUrl: string;
   stellarNetworkPassphrase?: string;
   contractAddresses?: ContractConfig[];
@@ -446,6 +448,10 @@ export function createEventsServer(options: EventsServerOptions): http.Server {
       : new ResponseTimeMiddleware({ slowRequestThresholdMs: options.slowRequestThresholdMs });
 
   const server = http.createServer(async (req, res) => {
+    addSecurityHeaders(res, {
+      isProduction: options.isProduction ?? process.env.NODE_ENV === 'production',
+    });
+
     // Request-ID middleware (#686): assigns (or validates+reuses) a requestId
     // and resolves a correlationId for every request, stamping both onto the
     // response headers. See listener/src/middleware/request-id.ts.
