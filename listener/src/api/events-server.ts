@@ -20,6 +20,7 @@ import { NotificationHistoryService } from '../services/notification-history';
 import { SearchSuggestionService } from '../services/search-suggestion';
 import { NotificationSearchService } from '../services/notification-search-service';
 import { collectRawBody, verifyWebhookRequest } from '../services/webhook-verifier';
+import { WebhookReplayCache } from '../services/webhook-replay-cache';
 import { IdempotencyKeyService, IdempotencyKeyReuseError } from '../services/idempotency-key-service';
 import { WebhookSecret, RateLimitConfig, ContractConfig } from '../types';
 import { RateLimiter } from './rate-limiter';
@@ -86,6 +87,17 @@ export interface EventsServerOptions {
   metricsStore?: NotificationMetricsStore | null;
   /** Maximum age of signed requests in seconds (default: 300 = 5 minutes). */
   signatureExpirationSeconds?: number;
+  /**
+   * Require `X-Webhook-Timestamp` on inbound webhooks (default: true).
+   * Without it a captured request is signed over the bare body and remains
+   * valid forever. Set to false only for legacy senders that cannot be changed.
+   */
+  requireWebhookTimestamp?: boolean;
+  /**
+   * Maximum number of recently accepted webhook signatures retained by the
+   * replay cache (default: 10000).
+   */
+  webhookReplayCacheMaxEntries?: number;
   /** Optional health monitor — exposes its last report at GET /api/notifications/health. */
   healthMonitor?: NotificationHealthMonitor | null;
   /**
@@ -419,6 +431,13 @@ export function createEventsServer(options: EventsServerOptions): http.Server {
   const suggestionService = new SearchSuggestionService();
   const notificationSearchService = new NotificationSearchService();
   const rateLimiter = options.rateLimit ? new RateLimiter(options.rateLimit) : undefined;
+  // Replay protection (#853): remembers every signature we accepted inside the
+  // freshness window so a captured request cannot be resubmitted. Kept
+  // independent of the optional client-supplied `Idempotency-Key` header,
+  // which an attacker replaying a request would simply omit.
+  const webhookReplayCache = new WebhookReplayCache({
+    maxEntries: options.webhookReplayCacheMaxEntries ?? 10_000,
+  });
   // Response-time tracking (#491)
   const responseTime =
     options.responseTimeMiddleware !== undefined && options.responseTimeMiddleware !== null
@@ -694,6 +713,8 @@ export function createEventsServer(options: EventsServerOptions): http.Server {
           requestId,
           correlationId,
           maxAgeSeconds,
+          requireTimestamp: options.requireWebhookTimestamp !== false,
+          replayCache: webhookReplayCache,
           auditService,
         });
 
