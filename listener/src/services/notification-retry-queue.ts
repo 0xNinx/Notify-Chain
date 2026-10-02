@@ -367,6 +367,6 @@ function buildRetryFingerprint(
   contractAddress: string
 ): string {
   const eventName =
-    getEventName(event.topic) ?? event.topic.map((entry) => entry.toString()).join('|');
+    getEventName(event.topic) ?? event.topic.map((entry: { toString(): string }) => entry.toString()).join('|');
   return `${contractAddress}:${event.id}:${eventName}:${event.txHash ?? ''}`;
 }

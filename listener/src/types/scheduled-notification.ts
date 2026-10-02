@@ -43,6 +43,8 @@ export interface ScheduledNotification {
   cancellationReason?: string | null;
   /** When the next retry should be attempted (null if not retrying). */
   nextRetryAt?: Date | null;
+  /** Stable logical key used to prevent duplicate delivery of the same notification. */
+  deduplicationKey?: string | null;
 }
 
 export interface CreateScheduledNotificationInput {
@@ -51,6 +53,7 @@ export interface CreateScheduledNotificationInput {
   targetRecipient: string;
   executeAt: Date;
   maxRetries?: number;
+  deduplicationKey?: string;
   eventId?: string;
   contractAddress?: string;
   priority?: number;
@@ -80,6 +83,7 @@ export interface ScheduledNotificationRow {
   priority: number;
   metadata: string | null;
   next_retry_at: string | null;
+  deduplication_key: string | null;
 }
 
 export interface NotificationExecutionLog {

@@ -407,6 +407,7 @@ export class DiscordNotificationService implements NotificationProvider {
       const originalLength = embed.title?.length ?? title.length;
       title = title.slice(0, MAX_DISCORD_EMBED_TITLE_LENGTH - 3) + '...';
       logger.warn('Discord embed title truncated', {
+        originalLength: title.length + 3,
         originalLength,
         maxLength: MAX_DISCORD_EMBED_TITLE_LENGTH,
       });
@@ -427,8 +428,10 @@ export class DiscordNotificationService implements NotificationProvider {
 
     let footer = embed.footer;
     if (footer?.text && footer.text.length > MAX_DISCORD_FOOTER_TEXT_LENGTH) {
+      const originalLength = footer.text.length;
       footer = { text: footer.text.slice(0, MAX_DISCORD_FOOTER_TEXT_LENGTH - 3) + '...' };
       logger.warn('Discord footer text truncated', {
+        originalLength,
         originalLength: footer.text.length,
         maxLength: MAX_DISCORD_FOOTER_TEXT_LENGTH,
       });

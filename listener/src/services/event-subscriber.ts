@@ -31,6 +31,7 @@ export class EventSubscriber {
   private eventQueue: EventProcessingQueue | null = null;
   private expirationService: NotificationExpirationService | null = null;
   private lastSuccessfulPollAt: number | null = null;
+  private backfillStartLedger: number | null = null;
   private circuitBreaker: CircuitBreaker | null = null;
   private backfillStartLedger: number | null = null;
   /** Cold-start ledger resolved once per session by resolveBackfillStartLedger(). */
@@ -389,6 +390,9 @@ export class EventSubscriber {
     if (lastCursor) {
       // Normal real-time polling: continue from the last known cursor.
       request = {
+        filters: [{ contractIds: [contractConfig.address], type: 'contract' }],
+        cursor: lastCursor,
+        limit: 100,
         filters: [
           {
             contractIds: [contractConfig.address],
@@ -405,6 +409,9 @@ export class EventSubscriber {
       // Cold start: apply the backfill safety limit.
       const startLedger = await this.resolveBackfillStartLedger();
       request = {
+        filters: [{ contractIds: [contractConfig.address], type: 'contract' }],
+        startLedger,
+        limit: 100,
         filters: [
           {
             contractIds: [contractConfig.address],

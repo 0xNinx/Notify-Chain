@@ -36,6 +36,8 @@ export interface RetrySchedulerConfig {
   maxDelayMs: number;
   /** Add ±25 % random jitter to prevent thundering herd. Default: true. */
   jitter: boolean;
+  /** Request timeout for outbound webhook delivery (ms). Default: 10 000. */
+  webhookTimeoutMs: number;
   /**
    * Hard ceiling on total delivery attempts, including the first one.
    * `undefined` (default) leaves each notification's own `maxRetries` in
@@ -59,6 +61,7 @@ export const RETRY_SCHEDULER_DEFAULTS: RetrySchedulerConfig = {
   multiplier: 2,
   maxDelayMs: 60 * 60 * 1_000,
   jitter: true,
+  webhookTimeoutMs: 10_000,
 };
 
 /**
@@ -125,6 +128,8 @@ export class RetryScheduler {
     this.processorId = this.config.processorId ?? `retry-${uuidv4()}`;
     this.repository = repository;
     this.discordService = discordService ?? null;
+    this.webhookDeliveryService =
+      webhookDeliveryService ?? new WebhookDeliveryService({ timeoutMs: this.config.webhookTimeoutMs });
     this.webhookDeliveryService = webhookDeliveryService ?? new WebhookDeliveryService();
     this.deliveryReceiptRepository = deliveryReceiptRepository;
   }

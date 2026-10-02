@@ -36,7 +36,8 @@ CREATE TABLE IF NOT EXISTS scheduled_notifications (
   contract_address TEXT,                    -- Stellar contract address (if applicable)
   priority INTEGER NOT NULL DEFAULT 5,      -- 1-10, lower = higher priority
   metadata TEXT,                            -- Additional JSON metadata
-  next_retry_at DATETIME                    -- When the next retry should be attempted
+  next_retry_at DATETIME,                   -- When the next retry should be attempted
+  deduplication_key TEXT                    -- Caller-supplied key; duplicate inserts with the same key are silently skipped
 );
 
 -- Indexes for performance optimization
@@ -61,6 +62,10 @@ CREATE INDEX IF NOT EXISTS idx_scheduled_notifications_created_at
 
 CREATE INDEX IF NOT EXISTS idx_scheduled_notifications_event_id 
   ON scheduled_notifications(event_id);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_scheduled_notifications_dedup_key
+  ON scheduled_notifications(deduplication_key)
+  WHERE deduplication_key IS NOT NULL;
 
 CREATE INDEX IF NOT EXISTS idx_scheduled_notifications_target 
   ON scheduled_notifications(target_recipient, status);

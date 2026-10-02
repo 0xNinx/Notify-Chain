@@ -161,6 +161,7 @@ export class NotificationStatsCache {
    * @notice Check if stats are currently cached
    */
   has(): boolean {
+    return this.cache.get(this.CACHE_KEY) !== undefined;
     return (this.cache as any).has(this.CACHE_KEY);
   }
 

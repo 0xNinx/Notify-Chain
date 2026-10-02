@@ -262,6 +262,7 @@ function loadAnalyticsConfig(): AnalyticsConfig {
 function loadRetrySchedulerConfig(policy: RetryPolicyOptions): RetrySchedulerOptions {
   return {
     enabled: trimEnv('RETRY_SCHEDULER_ENABLED') !== 'false',
+    webhookTimeoutMs: parseIntegerEnv('WEBHOOK_DELIVERY_TIMEOUT_MS', '10000'),
     pollIntervalMs: parseIntegerEnv('RETRY_SCHEDULER_POLL_INTERVAL_MS', '15000'),
     lockTimeoutMs: parseIntegerEnv('RETRY_SCHEDULER_LOCK_TIMEOUT_MS', '60000'),
     processorId: trimEnv('RETRY_SCHEDULER_PROCESSOR_ID'),

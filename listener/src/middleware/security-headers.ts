@@ -10,6 +10,7 @@
  * See: https://owasp.org/www-project-secure-headers/
  */
 
+import type { ServerResponse } from 'http';
 import type http from 'http';
 import type { ServerResponse } from 'http';
 
